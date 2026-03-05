@@ -1,13 +1,13 @@
 package com.mimecast.robin.smtp.extension.server;
 
 import com.mimecast.robin.main.Foundation;
+import com.mimecast.robin.smtp.MessageEnvelope;
+import com.mimecast.robin.smtp.SmtpResponses;
 import com.mimecast.robin.smtp.connection.ConnectionMock;
 import com.mimecast.robin.smtp.verb.Verb;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 
-import javax.mail.internet.AddressException;
-import javax.mail.internet.InternetAddress;
 import javax.naming.ConfigurationException;
 import java.io.IOException;
 import java.net.Socket;
@@ -19,11 +19,11 @@ class ServerDataTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     @Test
-    void processAscii() throws IOException, AddressException {
+    void processAscii() throws IOException {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("MIME-Version: 1.0\r\n");
         stringBuilder.append("From: <tony@example.com>\r\n");
@@ -35,7 +35,8 @@ class ServerDataTest {
 
         ConnectionMock connection = new ConnectionMock(stringBuilder);
         connection.setSocket(new Socket());
-        connection.getSession().addRcpt(new InternetAddress("john@example.com"));
+        connection.getSession().addEnvelope(new MessageEnvelope());
+        connection.getSession().getEnvelopes().getLast().addRcpt("john@example.com");
 
         Verb verb = new Verb("DATA");
 
@@ -45,13 +46,13 @@ class ServerDataTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("354 Ready and willing\r\n", connection.getLine(1));
+        assertEquals(SmtpResponses.READY_WILLING_354 + "\r\n", connection.getLine(1));
         assertTrue(connection.getLine(2).startsWith("250 2.0.0 Received OK"), "startsWith(\"250 2.0.0 Received OK\")");
         assertEquals(stringBuilder.toString().length() - (5 + 4), data.getBytesReceived());
     }
 
     @Test
-    void processAsciiLF() throws IOException, AddressException {
+    void processAsciiLF() throws IOException {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("MIME-Version: 1.0\n");
         stringBuilder.append("From: <tony@example.com>\n");
@@ -63,7 +64,8 @@ class ServerDataTest {
 
         ConnectionMock connection = new ConnectionMock(stringBuilder);
         connection.setSocket(new Socket());
-        connection.getSession().addRcpt(new InternetAddress("john@example.com"));
+        connection.getSession().addEnvelope(new MessageEnvelope());
+        connection.getSession().getEnvelopes().getLast().addRcpt("john@example.com");
 
         Verb verb = new Verb("DATA");
 
@@ -73,13 +75,13 @@ class ServerDataTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("354 Ready and willing\r\n", connection.getLine(1));
+        assertEquals(SmtpResponses.READY_WILLING_354 + "\r\n", connection.getLine(1));
         assertTrue(connection.getLine(2).startsWith("250 2.0.0 Received OK"), "startsWith(\"250 2.0.0 Received OK\")");
         assertEquals(stringBuilder.toString().length() - (3 + 2), data.getBytesReceived());
     }
 
     @Test
-    void processAsciiCR() throws IOException, AddressException {
+    void processAsciiCR() throws IOException {
         StringBuilder stringBuilder = new StringBuilder();
         stringBuilder.append("MIME-Version: 1.0\r");
         stringBuilder.append("From: <tony@example.com>\r");
@@ -91,7 +93,8 @@ class ServerDataTest {
 
         ConnectionMock connection = new ConnectionMock(stringBuilder);
         connection.setSocket(new Socket());
-        connection.getSession().addRcpt(new InternetAddress("john@example.com"));
+        connection.getSession().addEnvelope(new MessageEnvelope());
+        connection.getSession().getEnvelopes().getLast().addRcpt("john@example.com");
 
         Verb verb = new Verb("DATA");
 
@@ -101,7 +104,7 @@ class ServerDataTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("354 Ready and willing\r\n", connection.getLine(1));
+        assertEquals(SmtpResponses.READY_WILLING_354 + "\r\n", connection.getLine(1));
         assertTrue(connection.getLine(2).startsWith("250 2.0.0 Received OK"), "startsWith(\"250 2.0.0 Received OK\")");
         assertEquals(stringBuilder.toString().length() - (3 + 2), data.getBytesReceived());
     }

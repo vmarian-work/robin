@@ -1,0 +1,52 @@
+{
+  // Enable Dovecot authentication and mailbox integration.
+  auth: true,
+
+  // Use SQL authentication backend.
+  authSql: {
+    enabled: true,
+    jdbcUrl: "jdbc:postgresql://postgres-backend:5432/robin",
+    user: "robin",
+    password: "robin",
+
+    // Query for password verification
+    passwordQuery: "SELECT password FROM users WHERE email = ?",
+
+    // Query for user lookup (returns home, uid, gid, mail)
+    userQuery: "SELECT home, uid, gid, maildir AS mail FROM users WHERE email = ?",
+
+    // Query to list users for integration API.
+    usersQuery: "SELECT email FROM users"
+  },
+
+  // Disable socket authentication (we're using SQL).
+  authSocket: {
+    enabled: false
+  },
+
+  // Use LMTP backend for email delivery.
+  // Uses connection pooling to reuse TCP connections across deliveries.
+  saveLmtp: {
+    enabled: true,
+    servers: ["lmtp-backend"],
+    port: 24,
+    tls: false,
+
+    // Connection pool settings.
+    connectionPoolSize: 50,
+    connectionPoolTimeoutSeconds: 60,
+    connectionIdleTimeoutSeconds: 270,    // Close idle connections after 4.5 minutes.
+    connectionMaxLifetimeSeconds: 1800    // Close connections after 30 minutes max.
+  },
+
+  // Disable LDA backend (we're using LMTP).
+  saveLda: {
+    enabled: false
+  },
+
+  // Delivery options
+  inlineSaveMaxAttempts: 3,
+  inlineSaveRetryDelay: 2,
+  failureBehaviour: "retry",
+  maxRetryCount: 10
+}

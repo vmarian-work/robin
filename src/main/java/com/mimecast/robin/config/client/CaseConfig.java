@@ -110,10 +110,10 @@ public class CaseConfig extends ConfigFoundation {
      *
      * @return Port number.
      */
-    public int getPort() {
+    public int getSmtpPort() {
         RouteConfig routeConfig = getRoute();
-        return routeConfig != null && routeConfig.getPort() > 0 ?
-                routeConfig.getPort() :
+        return routeConfig != null && routeConfig.getSmtpPort() > 0 ?
+                routeConfig.getSmtpPort() :
                 Math.toIntExact(getLongProperty("port", 25L));
     }
 
@@ -249,12 +249,30 @@ public class CaseConfig extends ConfigFoundation {
     }
 
     /**
-     * Gets EHLO domain.
+     * Gets HELO domain (classic SMTP).
+     *
+     * @return Helo domain.
+     */
+    public String getHelo() {
+        return getStringProperty("helo");
+    }
+
+    /**
+     * Gets LHLO domain (LMTP).
+     *
+     * @return Lhlo domain.
+     */
+    public String getLhlo() {
+        return getStringProperty("lhlo");
+    }
+
+    /**
+     * Gets EHLO domain (ESMTP).
      *
      * @return Ehlo domain.
      */
     public String getEhlo() {
-        return getStringProperty("ehlo", "localhost");
+        return getStringProperty("ehlo");
     }
 
     /**

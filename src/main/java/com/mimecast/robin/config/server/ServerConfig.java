@@ -1,9 +1,16 @@
 package com.mimecast.robin.config.server;
 
+import com.google.gson.Gson;
 import com.mimecast.robin.config.BasicConfig;
+import com.mimecast.robin.config.DovecotConfig;
 import com.mimecast.robin.config.ConfigFoundation;
+import com.mimecast.robin.smtp.session.Session;
+import com.mimecast.robin.util.Magic;
+import com.mimecast.robin.util.PathUtils;
 
+import java.io.File;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.util.*;
 
 /**
@@ -19,10 +26,48 @@ import java.util.*;
 public class ServerConfig extends ConfigFoundation {
 
     /**
+     * Configuration directory.
+     */
+    private String configDir;
+
+    /**
+     * Mapping of configuration keys to their filenames for lazy loading.
+     */
+    private static final Map<String, String> CONFIG_FILENAMES = new HashMap<>();
+
+    static {
+        CONFIG_FILENAMES.put("webhooks", "webhooks.json5");
+        CONFIG_FILENAMES.put("storage", "storage.json5");
+        CONFIG_FILENAMES.put("queue", "queue.json5");
+        CONFIG_FILENAMES.put("relay", "relay.json5");
+        CONFIG_FILENAMES.put("dovecot", "dovecot.json5");
+        CONFIG_FILENAMES.put("prometheus", "prometheus.json5");
+        CONFIG_FILENAMES.put("users", "users.json5");
+        CONFIG_FILENAMES.put("scenarios", "scenarios.json5");
+        CONFIG_FILENAMES.put("vault", "vault.json5");
+        CONFIG_FILENAMES.put("clamav", "clamav.json5");
+        CONFIG_FILENAMES.put("rspamd", "rspamd.json5");
+        CONFIG_FILENAMES.put("blocklist", "blocklist.json5");
+        CONFIG_FILENAMES.put("blackhole", "blackhole.json5");
+        CONFIG_FILENAMES.put("proxy", "proxy.json5");
+        CONFIG_FILENAMES.put("bots", "bots.json5");
+    }
+
+    /**
      * Constructs a new ServerConfig instance.
      */
     public ServerConfig() {
         super();
+        this.configDir = null;
+    }
+
+    /**
+     * Constructs a new ServerConfig instance.
+     *
+     * @param map Configuration map.
+     */
+    public ServerConfig(Map<String, Object> map) {
+        super(map);
     }
 
     /**
@@ -33,6 +78,7 @@ public class ServerConfig extends ConfigFoundation {
      */
     public ServerConfig(String path) throws IOException {
         super(path);
+        this.configDir = new File(path).getParent();
     }
 
     /**
@@ -41,7 +87,7 @@ public class ServerConfig extends ConfigFoundation {
      * @return Hostname.
      */
     public String getHostname() {
-        return getStringProperty("hostname", "mimecast.com");
+        return getStringProperty("hostname", "example.com");
     }
 
     /**
@@ -54,68 +100,66 @@ public class ServerConfig extends ConfigFoundation {
     }
 
     /**
-     * Gets bind port.
+     * Gets SMTP port.
      *
      * @return Bind address number.
      */
-    public int getPort() {
-        return Math.toIntExact(getLongProperty("port", 25L));
+    public int getSmtpPort() {
+        return Math.toIntExact(getLongProperty("smtpPort", 25L));
     }
 
     /**
-     * Gets backlog size.
+     * Gets SMTPS port.
      *
-     * @return Backlog size.
+     * @return Bind address number.
      */
-    public int getBacklog() {
-        return Math.toIntExact(getLongProperty("backlog", 25L));
+    public int getSecurePort() {
+        return Math.toIntExact(getLongProperty("securePort", 465L));
     }
 
     /**
-     * Gets minimum pool size.
+     * Gets Submission port.
      *
-     * @return Thread pool min size.
+     * @return Bind address number.
      */
-    public int getMinimumPoolSize() {
-        return Math.toIntExact(getLongProperty("minimumPoolSize", 1L));
+    public int getSubmissionPort() {
+        return Math.toIntExact(getLongProperty("submissionPort", 587L));
     }
 
     /**
-     * Gets maximum pool size.
+     * Gets SMTP port listener configuration.
      *
-     * @return Thread pool max size.
+     * @return ListenerConfig instance.
      */
-    public int getMaximumPoolSize() {
-        return Math.toIntExact(getLongProperty("maximumPoolSize", 10L));
+    public ListenerConfig getSmtpConfig() {
+        return new ListenerConfig(getMapProperty("smtpConfig"));
     }
 
     /**
-     * Gets thread keep alive time.
+     * Gets secure port listener configuration.
      *
-     * @return Time in seconds.
+     * @return ListenerConfig instance.
      */
-    public int getThreadKeepAliveTime() {
-        return Math.toIntExact(getLongProperty("threadKeepAliveTime", 60L));
+    public ListenerConfig getSecureConfig() {
+        return new ListenerConfig(getMapProperty("secureConfig"));
     }
 
     /**
-     * Gets transactions limit.
-     * <p>This defines how many commands will be processed before breaking receipt loop.
+     * Gets submission port listener configuration.
      *
-     * @return Error limit.
+     * @return ListenerConfig instance.
      */
-    public int getTransactionsLimit() {
-        return Math.toIntExact(getLongProperty("transactionsLimit", 200L));
+    public ListenerConfig getSubmissionConfig() {
+        return new ListenerConfig(getMapProperty("submissionConfig"));
     }
 
     /**
-     * Gets error limit.
-     * <p>This defines how many syntax errors should be permitted before iterrupting the receipt.
+     * Gets DNS negative TTL (seconds) for caching NXDOMAIN/NODATA responses.
      *
-     * @return Error limit.
+     * @return ttl seconds.
      */
-    public int getErrorLimit() {
-        return Math.toIntExact(getLongProperty("errorLimit", 3L));
+    public int getDnsNegativeTtl() {
+        return Math.toIntExact(getLongProperty("dnsNegativeTtl", 300L));
     }
 
     /**
@@ -151,16 +195,186 @@ public class ServerConfig extends ConfigFoundation {
      * @return Key store path.
      */
     public String getKeyStore() {
-        return getStringProperty("keystore", "/usr/local/keystore");
+        return getStringProperty("keystore", "/usr/local/keystore.jks");
     }
 
     /**
      * Gets key store password.
      *
-     * @return Key store password string.
+     * @return Key store password string or path.
      */
     public String getKeyStorePassword() {
         return getStringProperty("keystorepassword", "");
+    }
+
+    /**
+     * Gets PEM certificate file path.
+     *
+     * @return PEM certificate path, or empty string if not configured.
+     */
+    public String getPemCertPath() {
+        return getStringProperty("pemCert", "");
+    }
+
+    /**
+     * Gets PEM private key file path.
+     *
+     * @return PEM private key path, or empty string if not configured.
+     */
+    public String getPemKeyPath() {
+        return getStringProperty("pemKey", "");
+    }
+
+    /**
+     * Gets trust store.
+     *
+     * @return Trust store path.
+     */
+    public String getTrustStore() {
+        return getStringProperty("truststore", "/usr/local/truststore.jks");
+    }
+
+    /**
+     * Gets trust store password.
+     *
+     * @return Trust store password string or path.
+     */
+    public String getTrustStorePassword() {
+        return getStringProperty("truststorepassword", "");
+    }
+
+    /**
+     * Allows accepting self-signed certificates when true.
+     * ONLY enable for local testing; never in production.
+     *
+     * @return Boolean (default: false).
+     */
+    public boolean isAllowSelfSigned() {
+        return getBooleanProperty("allowSelfSigned", false);
+    }
+
+    /**
+     * Gets service endpoint configuration.
+     *
+     * @return EndpointConfig instance for service.
+     */
+    public EndpointConfig getService() {
+        return getEndpointConfig("service");
+    }
+
+    /**
+     * Gets API endpoint configuration.
+     *
+     * @return EndpointConfig instance for API.
+     */
+    public EndpointConfig getApi() {
+        return getEndpointConfig("api");
+    }
+
+    /**
+     * Gets endpoint configuration with magic replacement applied.
+     *
+     * @param key         Configuration key (service or api).
+     * @return EndpointConfig instance.
+     */
+    private EndpointConfig getEndpointConfig(String key) {
+        if (map.containsKey(key) && map.get(key) instanceof Map) {
+            Map<String, Object> endpointMap = getMapProperty(key);
+            Map<String, Object> processedMap = applyMagicToConfig(endpointMap);
+            return new EndpointConfig(processedMap);
+        }
+        return new EndpointConfig(new HashMap<>());
+    }
+
+    /**
+     * Gets Vault configuration.
+     *
+     * @return VaultConfig instance.
+     */
+    public VaultConfig getVault() {
+        loadExternalIfAbsent("vault", Map.class);
+
+        if (map.containsKey("vault")) {
+            return new VaultConfig(getMapProperty("vault"));
+        }
+        return new VaultConfig(new HashMap<>());
+    }
+
+    /**
+     * Gets RBL (Realtime Blackhole List) configuration.
+     *
+     * @return RblConfig instance.
+     */
+    public RblConfig getRblConfig() {
+        if (map.containsKey("rbl")) {
+            return new RblConfig(getMapProperty("rbl"));
+        }
+        // Return default config if not defined.
+        return new RblConfig(null);
+    }
+
+    /**
+     * Gets blocklist configuration.
+     *
+     * @return BlocklistConfig instance.
+     */
+    public BlocklistConfig getBlocklistConfig() {
+        loadExternalIfAbsent("blocklist", Map.class);
+
+        if (map.containsKey("blocklist")) {
+            return new BlocklistConfig(getMapProperty("blocklist"));
+        }
+        // Return default config if not defined.
+        return new BlocklistConfig(null);
+    }
+
+    /**
+     * Gets blackhole configuration.
+     *
+     * @return BlackholeConfig instance.
+     */
+    public BlackholeConfig getBlackholeConfig() {
+        loadExternalIfAbsent("blackhole", Map.class);
+
+        if (map.containsKey("blackhole")) {
+            return new BlackholeConfig(getMapProperty("blackhole"));
+        }
+        // Return default config if not defined.
+        return new BlackholeConfig(null);
+    }
+
+    /**
+     * Gets proxy configuration.
+     *
+     * @return ProxyConfig instance.
+     */
+    public ProxyConfig getProxy() {
+        loadExternalIfAbsent("proxy", Map.class);
+
+        if (map.containsKey("proxy")) {
+            return new ProxyConfig(getMapProperty("proxy"));
+        }
+        // Return default config if not defined.
+        return new ProxyConfig(null);
+    }
+
+    /**
+     * Gets webhooks map.
+     *
+     * @return Webhooks map indexed by extension name.
+     */
+    @SuppressWarnings("rawtypes")
+    public Map<String, WebhookConfig> getWebhooks() {
+        loadExternalIfAbsent("webhooks", Map.class);
+
+        Map<String, WebhookConfig> webhooks = new HashMap<>();
+        if (map.containsKey("webhooks")) {
+            for (Object object : getMapProperty("webhooks").entrySet()) {
+                Map.Entry entry = (Map.Entry) object;
+                webhooks.put((String) entry.getKey(), new WebhookConfig((Map) entry.getValue()));
+            }
+        }
+        return webhooks;
     }
 
     /**
@@ -169,36 +383,142 @@ public class ServerConfig extends ConfigFoundation {
      * @return BasicConfig instance.
      */
     public BasicConfig getStorage() {
+        loadExternalIfAbsent("storage", Map.class);
         return new BasicConfig(getMapProperty("storage"));
     }
 
     /**
-     * Gets users list.
+     * Gets queue config.
      *
-     * @return Users list.
+     * @return BasicConfig instance.
      */
-    public List<UserConfig> getUsers() {
-        List<UserConfig> users = new ArrayList<>();
-        for (Map<String, String> user : (List<Map<String, String>>) getListProperty("users")) {
-            users.add(new UserConfig(user));
-        }
-        return users;
+    public BasicConfig getQueue() {
+        loadExternalIfAbsent("queue", Map.class);
+        return new BasicConfig(getMapProperty("queue"));
     }
 
     /**
-     * Gets user by username.
+     * Gets relay config.
      *
-     * @param find Username to find.
-     * @return Optional of UserConfig.
+     * @return BasicConfig instance.
      */
-    public Optional<UserConfig> getUser(String find) {
-        for (UserConfig user : getUsers()) {
-            if (user.getName().equals(find)) {
-                return Optional.of(user);
+    public BasicConfig getRelay() {
+        loadExternalIfAbsent("relay", Map.class);
+        return new BasicConfig(getMapProperty("relay"));
+    }
+
+    /**
+     * Gets dovecot config.
+     *
+     * @return DovecotConfig instance.
+     */
+    public DovecotConfig getDovecot() {
+        loadExternalIfAbsent("dovecot", Map.class);
+        return new DovecotConfig(getMapProperty("dovecot"));
+    }
+
+    /**
+     * Gets ClamAV config.
+     *
+     * @return BasicConfig instance.
+     */
+    public BasicConfig getClamAV() {
+        loadExternalIfAbsent("clamav", Map.class);
+        return new BasicConfig(getMapProperty("clamav"));
+    }
+
+    /**
+     * Gets Rspamd config.
+     *
+     * @return RspamdConfig instance.
+     */
+    public RspamdConfig getRspamd() {
+        loadExternalIfAbsent("rspamd", Map.class);
+        
+        if (map.containsKey("rspamd")) {
+            return new RspamdConfig(getMapProperty("rspamd"));
+        }
+        return new RspamdConfig(new HashMap<>());
+    }
+
+    /**
+     * Gets Prometheus remote write config.
+     *
+     * @return BasicConfig instance.
+     */
+    public BasicConfig getPrometheus() {
+        loadExternalIfAbsent("prometheus", Map.class);
+        return new BasicConfig(getMapProperty("prometheus"));
+    }
+
+    /**
+     * Gets users configuration.
+     *
+     * @return UsersConfig instance.
+     */
+    public UsersConfig getUsers() {
+        loadExternalIfAbsent("users", Map.class);
+
+        if (map.containsKey("users")) {
+            return new UsersConfig(getMapProperty("users"));
+        }
+        return new UsersConfig(new HashMap<>());
+    }
+
+    /**
+     * Is chaos headers enabled.
+     * <p>WARNING: This feature is intended for testing purposes only.
+     * Do NOT enable in production environments as it allows bypassing normal processing.
+     *
+     * @return Boolean (default: false).
+     */
+    public boolean isChaosHeaders() {
+        return getBooleanProperty("chaosHeaders", false);
+    }
+
+    /**
+     * Is XCLIENT extension enabled.
+     * <p>WARNING: This feature is intended for development and testing purposes only.
+     * Do NOT enable in production environments as XCLIENT allows clients to forge sender information.
+     *
+     * @return Boolean (default: false).
+     */
+    public boolean isXclientEnabled() {
+        return getBooleanProperty("xclientEnabled", false);
+    }
+
+    /**
+     * Applies magic replacement to string values in a configuration map.
+     *
+     * @param config Configuration map to process.
+     * @return New map with magic replacements applied.
+     */
+    @SuppressWarnings("unchecked")
+    private Map<String, Object> applyMagicToConfig(Map<String, Object> config) {
+        Map<String, Object> processed = new HashMap<>();
+        Session session = new Session();
+        
+        for (Map.Entry<String, Object> entry : config.entrySet()) {
+            Object value = entry.getValue();
+            if (value instanceof String) {
+                processed.put(entry.getKey(), Magic.magicReplace((String) value, session));
+            } else if (value instanceof List) {
+                List<Object> list = new ArrayList<>();
+                for (Object item : (List<?>) value) {
+                    if (item instanceof String) {
+                        list.add(Magic.magicReplace((String) item, session));
+                    } else {
+                        list.add(item);
+                    }
+                }
+                processed.put(entry.getKey(), list);
+            } else {
+                processed.put(entry.getKey(), value);
             }
         }
-        return Optional.empty();
+        return processed;
     }
+
 
     /**
      * Gets scenarios map.
@@ -207,11 +527,53 @@ public class ServerConfig extends ConfigFoundation {
      */
     @SuppressWarnings("rawtypes")
     public Map<String, ScenarioConfig> getScenarios() {
+        loadExternalIfAbsent("scenarios", Map.class);
+
         Map<String, ScenarioConfig> scenarios = new HashMap<>();
-        for (Object object : getMapProperty("scenarios").entrySet()) {
-            Map.Entry entry = (Map.Entry) object;
-            scenarios.put((String) entry.getKey(), new ScenarioConfig((Map) entry.getValue()));
+        if (map.containsKey("scenarios")) {
+            for (Object object : getMapProperty("scenarios").entrySet()) {
+                Map.Entry entry = (Map.Entry) object;
+                scenarios.put((String) entry.getKey(), new ScenarioConfig((Map) entry.getValue()));
+            }
         }
         return scenarios;
+    }
+
+    /**
+     * Gets bot configuration.
+     *
+     * @return BotConfig instance.
+     */
+    public BotConfig getBots() {
+        loadExternalIfAbsent("bots", Map.class);
+
+        if (map.containsKey("bots")) {
+            return new BotConfig(getMapProperty("bots"));
+        }
+        // Return default config if not defined.
+        return new BotConfig(null);
+    }
+
+    /**
+     * Helper to lazily load an external JSON5 file into the root config map under the given key
+     * if the key is absent and a config directory is available.
+     *
+     * @param key   Root key to populate in the map.
+     * @param clazz Class to parse the JSON into (e.g., Map.class, List.class).
+     */
+    private void loadExternalIfAbsent(String key, Class<?> clazz) {
+        if (!map.containsKey(key) && configDir != null && CONFIG_FILENAMES.containsKey(key)) {
+            String filename = CONFIG_FILENAMES.get(key);
+            String path = configDir + File.separator + filename;
+            if (PathUtils.isFile(path)) {
+                try {
+                    String content = Magic.streamMagicReplace(PathUtils.readFile(path, Charset.defaultCharset()));
+                    Object parsed = new Gson().fromJson(content, clazz);
+                    map.put(key, parsed);
+                } catch (IOException e) {
+                    log.error("Failed to load " + key + " from " + path, e);
+                }
+            }
+        }
     }
 }

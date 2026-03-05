@@ -10,7 +10,7 @@ import java.util.List;
  *
  * @see TransactionList
  */
-public class EnvelopeTransactionList extends TransactionList {
+public class EnvelopeTransactionList extends TransactionList implements Cloneable {
 
     /**
      * Gets MAIL transaction.
@@ -28,6 +28,38 @@ public class EnvelopeTransactionList extends TransactionList {
      */
     public List<Transaction> getRcpt() {
         return getTransactions("RCPT");
+    }
+
+    /**
+     * Gets all recipients from RCPT commands.
+     *
+     * @return List of String.
+     */
+    public List<String> getRecipients() {
+        List<String> recipients = new ArrayList<>();
+        for (Transaction transaction : getTransactions("RCPT")) {
+            if (transaction.getCommand().equalsIgnoreCase("rcpt") && transaction.getAddress() != null) {
+                recipients.add(transaction.getAddress());
+            }
+        }
+
+        return recipients;
+    }
+
+    /**
+     * Gets failed recipients from RCPT commands.
+     *
+     * @return List of String.
+     */
+    public List<String> getFailedRecipients() {
+        List<String> failedRecipients = new ArrayList<>();
+        for (Transaction transaction : getTransactions("RCPT")) {
+            if (transaction.getCommand().equalsIgnoreCase("rcpt") && transaction.isError() && transaction.getAddress() != null) {
+                failedRecipients.add(transaction.getAddress());
+            }
+        }
+
+        return failedRecipients;
     }
 
     /**
@@ -62,5 +94,32 @@ public class EnvelopeTransactionList extends TransactionList {
      */
     public List<Transaction> getBdat() {
         return getTransactions("BDAT");
+    }
+
+    /**
+     * Deep clone this EnvelopeTransactionList.
+     *
+     * @return cloned EnvelopeTransactionList instance.
+     */
+    @Override
+    public EnvelopeTransactionList clone() {
+        EnvelopeTransactionList clone = new EnvelopeTransactionList();
+
+        for (Transaction t : this.getTransactions()) {
+            String cmd = t.getCommand();
+            String payload = t.getPayload();
+            String response = t.getResponse();
+            boolean error = t.isError();
+
+            if (payload != null) {
+                clone.addTransaction(cmd, payload, response != null ? response : "", error);
+            } else if (response != null) {
+                clone.addTransaction(cmd, response, error);
+            } else {
+                clone.addTransaction(cmd, "");
+            }
+        }
+
+        return clone;
     }
 }

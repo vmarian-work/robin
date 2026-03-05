@@ -1,12 +1,26 @@
 {
   // Path to MTA logs if one running on local host.
-  localLogsDir: "/home/robin/log/",
+  localLogsDir: "/usr/local/robin/log/",
 
   // Pattern to match UID out of SMT responses.
   uidPattern: "\\s\\[([a-z0-9\\-_]+)]",
 
-  // Send RSET command before aditional envelopes.
+  // Client RSET command before additional envelopes..
   rsetBetweenEnvelopes: false,
+
+  // Auto reload properties file config.
+  propertiesAutoReload: {
+    enabled: true,
+    delaySeconds: 300,
+    intervalSeconds: 300
+  },
+
+  // Auto reload server config.
+  serverAutoReload: {
+    enabled: true,
+    delaySeconds: 300,
+    intervalSeconds: 300
+  },
 
   // Logging config.
   logging: {
@@ -28,5 +42,8 @@
     connectTimeout: 20,
     writeTimeout: 20,
     readTimeout: 90
-  }
+  },
+
+  // Enable debug mode for Robin IMAP client.
+  imapClientDebug: "false"
 }

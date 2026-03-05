@@ -1,5 +1,5 @@
 {
-  $schema: "/schema/case.schema.json",
+  $schema: "../../../../main/resources/schema/case.schema.json",
 
   // How many times to try and establish a connection to remote server. First counts.
   retry: 2,
@@ -54,6 +54,7 @@
     protocol: [
       [ "SMTP", "^220" ],
       [ "EHLO", "STARTTLS" ],
+      [ "SHLO", "^250-Welcome" ],
       [ "QUIT" ]
     ]
   }

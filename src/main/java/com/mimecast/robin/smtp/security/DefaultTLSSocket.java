@@ -41,6 +41,11 @@ public class DefaultTLSSocket implements TLSSocket {
     private String[] ciphers;
 
     /**
+     * Security policy for this connection (DANE/MTA-STS/Opportunistic).
+     */
+    private SecurityPolicy securityPolicy;
+
+    /**
      * Sets socket.
      *
      * @param socket Socket instance.
@@ -74,9 +79,21 @@ public class DefaultTLSSocket implements TLSSocket {
      */
     @Override
     public TLSSocket setCiphers(String[] ciphers) {
-        if (protocols != null) {
+        if (ciphers != null) {
             this.ciphers = ciphers;
         }
+        return this;
+    }
+
+    /**
+     * Sets security policy for this connection.
+     *
+     * @param securityPolicy SecurityPolicy to enforce.
+     * @return Self.
+     */
+    @Override
+    public TLSSocket setSecurityPolicy(SecurityPolicy securityPolicy) {
+        this.securityPolicy = securityPolicy;
         return this;
     }
 
@@ -89,19 +106,26 @@ public class DefaultTLSSocket implements TLSSocket {
      * @throws GeneralSecurityException Problems with TrustManager or KeyManager.
      */
     @Override
-    public SSLSocket startTLS(boolean client) throws IOException, GeneralSecurityException {
+    public SSLSocket startTLS(boolean client) throws Exception {
         if (socket == null) {
             throw new IOException("Socket not defined");
         }
 
-        // Trust manager.
-        TrustManager[] tm = new TrustManager[]{Factories.getTrustManager()};
+        // Trust manager - use DANE-aware if DANE policy is active.
+        TrustManager[] tm;
+        if (securityPolicy != null && securityPolicy.isDane()) {
+            log.info("Using DANE-aware trust manager for policy: {}", securityPolicy);
+            tm = new TrustManager[]{new DaneTrustManager(securityPolicy)};
+        } else {
+            tm = new TrustManager[]{Factories.getTrustManager()};
+        }
 
         // Key manager X.509.
         KeyManager[] km = null;
         if (!client) {
             KeyManagerFactory kmf = KeyManagerFactory.getInstance("SunX509");
-            KeyStore ks = KeyStore.getInstance("JKS");
+            String storeType = Config.getProperties().getStringProperty("javax.net.ssl.keyStoreType", "JKS");
+            KeyStore ks = KeyStore.getInstance(storeType);
 
             // Load keystore.
             ks.load(getKeyStore(), getKeyStorePassword());
@@ -119,7 +143,7 @@ public class DefaultTLSSocket implements TLSSocket {
         // Wrap 'socket' from above in a TLS socket.
         InetSocketAddress remoteAddress = (InetSocketAddress) socket.getRemoteSocketAddress();
         @SuppressWarnings("squid:S2095")
-        SSLSocket sslSocket = (SSLSocket) sf.createSocket(socket, remoteAddress.getHostName(), socket.getPort(), true);
+        SSLSocket sslSocket = (SSLSocket) sf.createSocket(socket, remoteAddress.getHostString(), socket.getPort(), true);
 
         // We are a client.
         sslSocket.setUseClientMode(client);
@@ -129,7 +153,7 @@ public class DefaultTLSSocket implements TLSSocket {
         sslSocket.setEnabledCipherSuites(getEnabledCipherSuites(sslSocket));
 
         // Make a friend!
-        log.info("Attempting handshake with: {}.", sslSocket.getSession().getPeerHost());
+        log.info("Attempting handshake with: {}.", remoteAddress.getHostString());
         sslSocket.startHandshake();
         log.debug("Handshake done with: {} / {}.", sslSocket.getSession().getProtocol(), sslSocket.getSession().getCipherSuite());
 

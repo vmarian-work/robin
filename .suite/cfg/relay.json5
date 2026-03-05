@@ -1,0 +1,20 @@
+{
+  // Enable inbound relay (LMTP relay to Dovecot is configured separately).
+  enabled: false,
+
+  // Enable outbound relay.
+  outboundEnabled: true,
+
+  // Enable outbound MX relay.
+  // When enabled, the server will perform MX lookups for recipient domains instead of using inbound relay host.
+  outboundMxEnabled: true,
+
+  // Disable relay by magic header feature.
+  disableRelayHeader: true,
+
+  // Bounce email if relay fails.
+  bounce: true,
+
+  // Retry count for outbound relay (Default: 30).
+  maxRetryCount: 30
+}

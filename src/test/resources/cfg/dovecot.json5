@@ -1,0 +1,110 @@
+{
+  // Enable Dovecot authentication and mailbox integration.
+  auth: false,
+
+  // Dovecot UNIX socket authentication and userdb lookup backend.
+  authSocket: {
+    // Enable Dovecot socket authentication backend.
+    enabled: false,
+
+    // Path to Dovecot authentication client socket (SASL mechanisms).
+    client: "/run/dovecot/auth-client",
+
+    // Path to Dovecot userdb lookup socket (mailbox existence).
+    userdb: "/run/dovecot/auth-userdb"
+  },
+
+  // SQL authentication backend configuration.
+  authSql: {
+    // Enable SQL authentication backend.
+    enabled: false,
+
+    jdbcUrl: "jdbc:postgresql://robin-postgres:5432/robin",
+    user: "robin",
+    password: "robin",
+
+    // Query for password verification.
+    passwordQuery: "SELECT password FROM users WHERE email = ?",
+
+    // Query for user lookup (returns home, uid, gid, mail).
+    userQuery: "SELECT home, uid, gid, maildir AS mail FROM users WHERE email = ?",
+
+    // Query to list users for integration API.
+    usersQuery: "SELECT email FROM users",
+
+    // Query to check if a domain is served (returns any row if served).
+    domainQuery: "SELECT 1 FROM users WHERE email LIKE '%@' || ? UNION SELECT 1 FROM aliases WHERE source LIKE '%@' || ? UNION SELECT 1 FROM auto_aliases WHERE source LIKE '%@' || ?",
+
+    // Query to resolve aliases to real destination addresses.
+    aliasQuery: "SELECT destination FROM (SELECT destination, 0 as priority FROM aliases WHERE source = ? AND destination <> '' UNION SELECT email as destination, 1 as priority FROM users WHERE email = ? UNION SELECT destination, 2 as priority FROM auto_aliases WHERE source = ? AND destination <> '') AS t ORDER BY priority LIMIT 1"
+  },
+
+  // LMTP backend configuration (default: enabled, localhost:24).
+  // This backend is recommended for distributed and SQL-backed setups.
+  // Folder routing is handled automatically by Dovecot based on message direction.
+  // Uses connection pooling to reuse TCP connections across deliveries.
+  saveLmtp: {
+    // Enable LMTP delivery backend.
+    enabled: false,
+
+    // List of LMTP server addresses (default: localhost).
+    servers: ["127.0.0.1"],
+
+    // LMTP server port (default: 24).
+    port: 24,
+
+    // Enable TLS for LMTP connections (default: false).
+    tls: false,
+
+    // Maximum number of pooled connections (default: 50).
+    connectionPoolSize: 50,
+
+    // Max time (seconds) to wait for a connection from the pool (default: 60).
+    connectionPoolTimeoutSeconds: 60,
+
+    // Close idle connections after this many seconds (default: 270, i.e., 4.5 minutes).
+    // Should be less than Dovecot's LMTP client timeout (default 5 minutes).
+    connectionIdleTimeoutSeconds: 270,
+
+    // Close connections after this many seconds regardless of activity (default: 1800, i.e., 30 minutes).
+    connectionMaxLifetimeSeconds: 1800
+  },
+
+  // LDA backend configuration (optional).
+  // This backend requires Robin and Dovecot in the same container or host.
+  saveLda: {
+    // Enable LDA delivery backend (default: false).
+    enabled: false,
+
+    // Path to Dovecot LDA binary.
+    ldaBinary: "/usr/libexec/dovecot/dovecot-lda",
+
+    // Folder for inbound email delivery via LDA.
+    inboxFolder: "INBOX",
+
+    // Folder for outbound email delivery via LDA.
+    sentFolder: "Sent",
+
+    // Limit concurrent LDA subprocesses to prevent resource exhaustion.
+    maxConcurrency: 50,
+
+    // Timeout (seconds) for LDA subprocess execution (default: 30).
+    // LDA processes are killed if they exceed this timeout.
+    ldaTimeoutSeconds: 30
+  },
+
+  // Shared mailbox delivery options for both backends.
+  // Maximum number of attempts to save an email before giving up.
+  inlineSaveMaxAttempts: 2,
+
+  // Delay (seconds) between save attempts.
+  inlineSaveRetryDelay: 3,
+
+  // Behaviour on email delivery failure: "retry" (default) or "bounce".
+  // "retry" will attempt to redeliver later; "bounce" will send a bounce message to the sender.
+  // If all retries fail it will still result in a bounce.
+  failureBehaviour: "retry",
+
+  // Maximum retry count (default: 10).
+  maxRetryCount: 10
+}

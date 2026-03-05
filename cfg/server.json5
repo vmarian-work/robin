@@ -5,17 +5,116 @@
   // Interface the server will bind too (default: ::).
   bind: "::",
 
-  // Port the server will listen too (default: 25).
-  port: 25,
+  // Port the server will listen too (default: 25, 0 to disable).
+  smtpPort: 25,
 
-  // Number of connections to be allowed in the backlog (default: 25).
-  backlog: 25,
+  // Port for secure SMTP via SSL/TLS (default: 465, 0 to disable).
+  securePort: 465,
 
-  // Maximum number of SMTP transactions to process ofver a connection.
-  transactionsLimit: 200,
+  // Port for mail submission (default: 587, 0 to disable).
+  submissionPort: 587,
 
-  // Number of SMTP errors to allow before terminating connection (default: 3).
-  errorLimit: 3,
+  // SMTP port configuration
+  smtpConfig: {
+    // Number of connections to be allowed in the backlog (default: 25).
+    backlog: 25,
+
+    // Minimum number of threads in the pool.
+    minimumPoolSize: 1,
+
+    // Maximum number of threads in the pool.
+    maximumPoolSize: 10,
+
+    // Time (in seconds) to keep idle threads alive.
+    threadKeepAliveTime: 60,
+
+    // Maximum number of SMTP transactions to process over a connection.
+    transactionsLimit: 305,
+
+    // Maximum number of recipients (emails) allowed per envelope (default: 100).
+    recipientsLimit: 100,
+
+    // Maximum number of envelopes (emails) allowed per connection (default: 100).
+    envelopeLimit: 100,
+
+    // Maximum size of a message in megabytes (default: 10242400).
+    messageSizeLimit: 10242400, // 10 MB
+
+    // Number of SMTP errors to allow before terminating connection (default: 3).
+    errorLimit: 3,
+
+    // DoS Protection Settings
+    // Enable or disable DoS protections (default: true).
+    dosProtectionEnabled: true,
+
+    // Maximum concurrent connections per IP address (default: 10, 0 to disable).
+    maxConnectionsPerIp: 10,
+
+    // Maximum total concurrent connections (default: 100, 0 to disable).
+    maxTotalConnections: 100,
+
+    // Rate limit window in seconds (default: 60).
+    rateLimitWindowSeconds: 60,
+
+    // Maximum new connections per IP within rate limit window (default: 30, 0 to disable).
+    maxConnectionsPerWindow: 30,
+
+    // Maximum commands per minute per connection (default: 100, 0 to disable).
+    maxCommandsPerMinute: 100,
+
+    // Minimum data transfer rate in bytes per second (default: 10240, 0 to disable).
+    minDataRateBytesPerSecond: 10240, // 10 KB/s
+
+    // Maximum data transfer timeout in seconds (default: 300).
+    maxDataTimeoutSeconds: 300,
+
+    // Tarpit delay in milliseconds for suspicious behavior (default: 1000, 0 to disable).
+    tarpitDelayMillis: 1000
+  },
+
+  // Secure SMTP port configuration
+  secureConfig: {
+    backlog: 25,
+    minimumPoolSize: 1,
+    maximumPoolSize: 10,
+    threadKeepAliveTime: 60,
+    transactionsLimit: 305,
+    recipientsLimit: 100,
+    envelopeLimit: 100,
+    messageSizeLimit: 10242400, // 10 MB
+    errorLimit: 3,
+    dosProtectionEnabled: true,
+    maxConnectionsPerIp: 10,
+    maxTotalConnections: 100,
+    rateLimitWindowSeconds: 60,
+    maxConnectionsPerWindow: 30,
+    maxCommandsPerMinute: 100,
+    minDataRateBytesPerSecond: 10240,
+    maxDataTimeoutSeconds: 300,
+    tarpitDelayMillis: 1000
+  },
+
+  // Submission port configuration
+  submissionConfig: {
+    backlog: 25,
+    minimumPoolSize: 1,
+    maximumPoolSize: 10,
+    threadKeepAliveTime: 60,
+    transactionsLimit: 305,
+    recipientsLimit: 100,
+    envelopeLimit: 100,
+    messageSizeLimit: 10242400, // 10 MB
+    errorLimit: 3,
+    dosProtectionEnabled: true,
+    maxConnectionsPerIp: 10,
+    maxTotalConnections: 100,
+    rateLimitWindowSeconds: 60,
+    maxConnectionsPerWindow: 30,
+    maxCommandsPerMinute: 100,
+    minDataRateBytesPerSecond: 10240,
+    maxDataTimeoutSeconds: 300,
+    tarpitDelayMillis: 1000
+  },
 
   // Advertise AUTH support (default: true).
   auth: true,
@@ -26,80 +125,110 @@
   // Advertise CHUNKING support (default: true).
   chunking: true,
 
-  // Java keystore (default: /usr/local/keystore.jks).
-  keystore: "/usr/local/keystore",
+  // PEM certificate file path (alternative to JKS keystore).
+  // If both pemCert and pemKey are set, they take precedence over keystore.
+  pemCert: "",
 
-  // Keystore password.
+  // PEM private key file path (PKCS8 format).
+  pemKey: "",
+
+  // Java keystore (default: /usr/local/keystore.jks).
+  keystore: "/usr/local/robin/keystore.jks",
+
+  // Keystore password or path to password file.
   keystorepassword: "avengers",
 
-  // Email storage configuration.
-  storage: {
-    enabled: true,
+  // Java truststore (default: /usr/local/truststore.jks).
+  truststore: "/opt/java/openjdk/lib/security/cacerts",
 
-    // Path to storage folder.
-    path: "/usr/local/store",
+  // Truststore password or path to password file.
+  truststorepassword: "avengers",
 
-    // Auto clean storage on service start.
-    clean: true,
+  // Allow self-signed certificates (default: false).
+  allowSelfSigned: true,
 
-    // Auto clean delete matching filenames only.
-    patterns: [
-      "^([0-9]{8}\\.)"
+  // Service endpoint configuration.
+  service: {
+    // Port for service endpoint.
+    port: 8080,
+
+    // Authentication type: none, basic, bearer.
+    authType: "none",
+
+    // Authentication value.
+    // For basic: "username:password"
+    // For bearer: "token"
+    authValue: "",
+
+    // IP addresses or CIDR blocks allowed without authentication.
+    allowList: [
+      // "127.0.0.1",
+      // "::1",
+      // "192.168.1.0/24",
+      // "10.0.0.0/8"
     ]
   },
 
-  // Users allowed to authorize to the server.
-  users: [
-    {
-      name: "tony@example.com",
-      pass: "giveHerTheRing"
-    }
-  ],
+  // API endpoint configuration.
+  api: {
+    // Port for API endpoint.
+    port: 8090,
 
-  // Predefined server response scenarios based on EHLO value.
-  scenarios: {
+    // Authentication type: none, basic, bearer.
+    authType: "none",
 
-    // Default scenario to use if no others match.
-    "*": {
-      rcpt: [
-        // Custom response for addresses matching value regex.
-        {
-          value: "friday\\-[0-9]+@example\\.com",
-          response: "252 I think I know this user"
-        }
-      ]
-    },
+    // Authentication value.
+    // For basic: "username:password"
+    // For bearer: "token"
+    authValue: "",
 
-    // How to reject mail at different commands.
-    "reject.com": {
-      // Custom response for EHLO.
-      ehlo: "501 Not talking to you",
+    // IP addresses or CIDR blocks allowed without authentication.
+    allowList: [
+      // "127.0.0.1",
+      // "::1",
+      // "192.168.1.0/24",
+      // "10.0.0.0/8"
+    ]
+  },
 
-      // Custom response for MAIL.
-      mail: "451 I'm not listening to you",
+  // RBL (Realtime Blackhole List) configuration.
+  rbl: {
+    // Enable or disable RBL checking (default: false).
+    enabled: true,
 
-      // Custom response for given recipients.
-      rcpt: [
-        {
-          value: "ultron@reject\\.com",
-          response: "501 Heart not found"
-        }
-      ],
+    // Reject messages from blacklisted IPs (default: false).
+    // If false, checks will be made and result saved in session.
+    // Handy when using webhooks to decide on rejection.
+    rejectEnabled: true,
 
-      // Custom response for DATA.
-      data: "554 Your data is corrupted"
-    },
+    // List of RBL providers to check against.
+    providers: [
+      "zen.spamhaus.org",
+      "bl.spamcop.net",
+      "dnsbl.sorbs.net"
+    ],
 
-    // How to configure TLS for failure using a deprecated version and weak cipher.
-    "failtls.com" : {
+    // Maximum time in seconds to wait for RBL responses (default: 5).
+    timeoutSeconds: 5
+  },
 
-      // Custom response for STARTTLS.
-      // STARTTLS also supports a list of protocols and ciphers to use handshake.
-      starttls: {
-        response: "220 You will fail",
-        protocols: ["TLSv1.0"],
-        ciphers: ["TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA"]
-      }
-    }
-  }
+  // Maximum size in bytes for email messages (default: 10242400, 0 = unlimited).
+  emailSizeLimit: 10242400,
+
+  // Maximum number of envelopes (recipients) per message (default: 100, 0 = unlimited).
+  envelopesLimit: 100,
+
+  // Chaos headers for testing exception scenarios.
+  // WARNING: Do NOT enable in production. This feature allows bypassing normal processing
+  // and is intended strictly for development and testing purposes.
+  chaosHeaders: false,
+
+  // Enable XCLIENT extension for development and testing only.
+  // WARNING: Do NOT enable in production. XCLIENT allows clients to forge sender information
+  // and is intended strictly for development and testing purposes.
+  xclientEnabled: false,
+
+  // DNS negative TTL (seconds) for caching NXDOMAIN/NODATA responses (default: 300).
+  // Reduces DNS lookups for non-existent domains.
+  dnsNegativeTtl: 300
 }

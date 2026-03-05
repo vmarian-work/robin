@@ -2,28 +2,38 @@ package com.mimecast.robin.main;
 
 import com.mimecast.robin.annotation.Plugin;
 import com.mimecast.robin.assertion.client.ExternalClient;
+import com.mimecast.robin.assertion.client.imap.ImapExternalClient;
 import com.mimecast.robin.assertion.client.logs.LogsExternalClient;
+import com.mimecast.robin.bots.BotProcessor;
+import com.mimecast.robin.bots.EmailAnalysisBot;
+import com.mimecast.robin.bots.SessionBot;
 import com.mimecast.robin.config.BasicConfig;
+import com.mimecast.robin.queue.QueueDatabase;
+import com.mimecast.robin.queue.QueueFactory;
+import com.mimecast.robin.queue.RelaySession;
 import com.mimecast.robin.smtp.auth.DigestCache;
 import com.mimecast.robin.smtp.auth.StaticDigestCache;
 import com.mimecast.robin.smtp.connection.Connection;
 import com.mimecast.robin.smtp.extension.client.Behaviour;
 import com.mimecast.robin.smtp.extension.client.DefaultBehaviour;
 import com.mimecast.robin.smtp.security.DefaultTLSSocket;
-import com.mimecast.robin.smtp.security.PermissiveTrustManager;
 import com.mimecast.robin.smtp.security.TLSSocket;
 import com.mimecast.robin.smtp.session.Session;
-import com.mimecast.robin.storage.LocalStorageClient;
-import com.mimecast.robin.storage.StorageClient;
+import com.mimecast.robin.storage.*;
+import com.mimecast.robin.trust.PermissiveTrustManager;
+import com.mimecast.robin.trust.TrustManager;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import javax.net.ssl.X509TrustManager;
+import java.io.File;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Factories for pluggable components.
@@ -67,18 +77,51 @@ public class Factories {
     private static Callable<DigestCache> database;
 
     /**
+     * Queue database implementation.
+     * <p>Used for persistent queue storage.
+     */
+    private static Callable<QueueDatabase<RelaySession>> queueDatabase;
+
+    /**
      * MTA storage client.
      * <p>Used to store MTA emails received.
      */
     private static Callable<StorageClient> storageClient;
 
     /**
+     * MTA storage processors.
+     * <p>Used to do post receipt processing like virus and spam scanning or dovecot LDA delivery.
+     */
+    private static final List<Callable<StorageProcessor>> storageProcessors = List.of(
+            SpamStorageProcessor::new,
+            AVStorageProcessor::new,
+            LocalStorageProcessor::new,
+            DovecotStorageProcessor::new
+    );
+
+    /**
      * External clients.
      * <p>Used to fetch external service logs for assertion.
      */
-    private static final Map<String, Callable<ExternalClient>> externalClients = new HashMap<String, Callable<ExternalClient>>() {{
+    private static final Map<String, Callable<ExternalClient>> externalClients = new HashMap<>() {{
         put("logs", LogsExternalClient::new);
+        put("imap", ImapExternalClient::new);
     }};
+
+    /**
+     * Bot processors.
+     * <p>Map of bot name to bot processor instance.
+     * <p>Using ConcurrentHashMap for thread-safe read/write operations.
+     */
+    private static final Map<String, BotProcessor> bots = new ConcurrentHashMap<>();
+
+    /**
+     * Static initializer to register all available bots.
+     */
+    static {
+        registerBot(new SessionBot());
+        registerBot(new EmailAnalysisBot());
+    }
 
     /**
      * Protected constructor.
@@ -178,8 +221,9 @@ public class Factories {
      * Gets TrustManager.
      *
      * @return TrustManager instance.
+     * @throws Exception If the TrustManager cannot be created.
      */
-    public static X509TrustManager getTrustManager() {
+    public static X509TrustManager getTrustManager() throws Exception {
         if (trustManager != null) {
             try {
                 return trustManager.call();
@@ -188,7 +232,13 @@ public class Factories {
             }
         }
 
-        return new PermissiveTrustManager();
+        // Use permissive trust manager if allowSelfSigned is enabled.
+        if (Config.getServer().isAllowSelfSigned()) {
+            log.warn("PermissiveTrustManager enabled: accepting self-signed certificates");
+            return new PermissiveTrustManager();
+        }
+
+        return new TrustManager();
     }
 
     /**
@@ -246,6 +296,24 @@ public class Factories {
     }
 
     /**
+     * Gets StorageProcessors.
+     *
+     * @return list of Callable<StorageProcessor>.
+     */
+    public static List<Callable<StorageProcessor>> getStorageProcessors() {
+        return storageProcessors;
+    }
+
+    /**
+     * Adds StorageProcessor.
+     *
+     * @param storageProcessor StorageProcessor callable.
+     */
+    public static void addStorageProcessor(Callable<StorageProcessor> storageProcessor) {
+        Factories.storageProcessors.add(storageProcessor);
+    }
+
+    /**
      * Puts ExternalClient.
      *
      * @param key      Config map key.
@@ -283,5 +351,83 @@ public class Factories {
      */
     public static List<String> getExternalKeys() {
         return new ArrayList<>(externalClients.keySet());
+    }
+
+    /**
+     * Registers a bot processor.
+     * <p>Thread-safe thanks to ConcurrentHashMap.
+     *
+     * @param bot Bot processor to register.
+     */
+    public static void registerBot(BotProcessor bot) {
+        if (bot != null && bot.getName() != null && !bot.getName().isEmpty()) {
+            bots.put(bot.getName().toLowerCase(), bot);
+            log.info("Registered bot: {}", bot.getName());
+        } else {
+            log.warn("Attempted to register invalid bot (null or empty name)");
+        }
+    }
+
+    /**
+     * Gets a bot processor by name.
+     *
+     * @param name Bot name (case-insensitive).
+     * @return Optional containing the bot processor if found.
+     */
+    public static Optional<BotProcessor> getBot(String name) {
+        if (name == null || name.isEmpty()) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(bots.get(name.toLowerCase()));
+    }
+
+    /**
+     * Checks if a bot is registered.
+     *
+     * @param name Bot name (case-insensitive).
+     * @return true if bot is registered.
+     */
+    public static boolean hasBot(String name) {
+        return name != null && !name.isEmpty() && bots.containsKey(name.toLowerCase());
+    }
+
+    /**
+     * Gets all registered bot names.
+     *
+     * @return Array of bot names.
+     */
+    public static String[] getBotNames() {
+        return bots.keySet().toArray(new String[0]);
+    }
+
+    /**
+     * Sets QueueDatabase callable for custom factory override.
+     * <p>Used primarily in tests to inject custom queue implementations.
+     *
+     * @param callable QueueDatabase callable
+     */
+    public static void setQueueDatabase(Callable<QueueDatabase<RelaySession>> callable) {
+        queueDatabase = callable;
+    }
+
+    /**
+     * Gets QueueDatabase instance using configuration-based backend selection.
+     * <p>If a custom factory has been set via {@link #setQueueDatabase(Callable)}, uses that.
+     * Otherwise delegates to {@link QueueFactory#createQueueDatabase()} which selects backend
+     * based on configuration priority: MapDB → MariaDB → PostgreSQL → InMemory.
+     *
+     * @return QueueDatabase instance
+     */
+    public static QueueDatabase<RelaySession> getQueueDatabase() {
+        if (queueDatabase != null) {
+            try {
+                return queueDatabase.call();
+            } catch (Exception e) {
+                log.error("Error calling queue database: {}", e.getMessage());
+            }
+        }
+
+        // Use factory to select appropriate backend based on configuration.
+        return QueueFactory.createQueueDatabase();
     }
 }

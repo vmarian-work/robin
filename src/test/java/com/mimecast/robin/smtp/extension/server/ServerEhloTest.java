@@ -16,7 +16,7 @@ class ServerEhloTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     @Test
@@ -25,6 +25,7 @@ class ServerEhloTest {
         ConnectionMock connection = new ConnectionMock(stringBuilder);
         connection.getSession().setFriendRdns("example.com");
         connection.getSession().setFriendAddr("127.0.0.1");
+        connection.getSession().setSecurePort(true);
 
         Verb verb = new Verb("EHLO example.com");
 

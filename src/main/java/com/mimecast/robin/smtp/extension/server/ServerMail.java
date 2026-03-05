@@ -1,9 +1,14 @@
 package com.mimecast.robin.smtp.extension.server;
 
 import com.mimecast.robin.config.server.ScenarioConfig;
+import com.mimecast.robin.main.Config;
+import com.mimecast.robin.smtp.MessageEnvelope;
+import com.mimecast.robin.smtp.SmtpResponses;
 import com.mimecast.robin.smtp.connection.Connection;
+import com.mimecast.robin.smtp.security.BlackholeMatcher;
 import com.mimecast.robin.smtp.verb.Verb;
 import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.ThreadContext;
 
 import javax.mail.internet.AddressException;
 import javax.mail.internet.InternetAddress;
@@ -56,6 +61,11 @@ public class ServerMail extends ServerProcessor {
     private InternetAddress oRcpt;
 
     /**
+     * Envelope limit.
+     */
+    private int envelopeLimit = 100;
+
+    /**
      * Advert getter.
      *
      * @return Advert string.
@@ -77,23 +87,73 @@ public class ServerMail extends ServerProcessor {
     public boolean process(Connection connection, Verb verb) throws IOException {
         super.process(connection, verb);
 
-        // Bypass for RCPT extension.
+        // Bypass for RCPT extension which extends this one.
         if (verb.getKey().equals("mail")) {
+            if (!connection.getSession().isAuth() && connection.getSession().isOutbound()) {
+                connection.write(String.format(SmtpResponses.AUTH_REQUIRED_530, connection.getSession().getUID()));
+                return false;
+            }
+
+            // Check envelope limit before adding new envelope.
+            if (connection.getSession().getEnvelopes().size() >= envelopeLimit) {
+                connection.write(String.format(SmtpResponses.ENVELOPE_LIMIT_EXCEEDED_452, connection.getSession().getUID()));
+                return false;
+            }
+
+            // Make envelope.
+            MessageEnvelope envelope = new MessageEnvelope();
+            connection.getSession().addEnvelope(envelope);
+
+            // Check if envelope should be blackholed based on IP, EHLO, and MAIL FROM.
+            if (connection.getSession().isBlackholed() ||
+                BlackholeMatcher.shouldBlackhole(
+                    connection.getSession().getFriendAddr(),
+                    connection.getSession().getEhlo(),
+                    getAddress().getAddress(),
+                    null,
+                    Config.getServer().getBlackholeConfig())) {
+                envelope.setBlackholed(true);
+            }
 
             // ScenarioConfig response.
             Optional<ScenarioConfig> opt = connection.getScenario();
             if (opt.isPresent() && opt.get().getMail() != null) {
+                if (opt.get().getMail().startsWith("2")) {
+                    envelope.setMail(getAddress().getAddress());
+                }
                 connection.write(opt.get().getMail());
             }
 
-            // Accept all.
+            // Accept all (with validation).
             else {
-                connection.getSession().setMail(getAddress());
-                connection.write("250 2.1.0 Sender OK [" + connection.getSession().getUID() + "]");
+                // Validate email address format.
+                try {
+                    InternetAddress addr = getAddress();
+                    addr.validate();
+                    envelope.setMail(addr.getAddress());
+                    connection.write(String.format(SmtpResponses.SENDER_OK_250, connection.getSession().getUID()));
+                } catch (AddressException e) {
+                    connection.write(String.format(SmtpResponses.INVALID_ADDRESS_501 + " [%s]", connection.getSession().getUID()));
+                    return false;
+                }
             }
+            ThreadContext.put("cCode", envelope.getMail());
+
+            return true;
         }
 
-        return true;
+        return false;
+    }
+
+    /**
+     * Sets envelope limit.
+     *
+     * @param limit Limit value.
+     * @return ServerMail instance.
+     */
+    public ServerMail setEnvelopeLimit(int limit) {
+        this.envelopeLimit = limit;
+        return this;
     }
 
     /**

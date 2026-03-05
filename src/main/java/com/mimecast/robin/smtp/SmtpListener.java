@@ -1,6 +1,11 @@
 package com.mimecast.robin.smtp;
 
+import com.mimecast.robin.config.server.ListenerConfig;
 import com.mimecast.robin.main.Config;
+import com.mimecast.robin.main.Server;
+import com.mimecast.robin.smtp.metrics.SmtpMetrics;
+import com.mimecast.robin.smtp.security.BlocklistMatcher;
+import com.mimecast.robin.smtp.security.ConnectionTracker;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -9,51 +14,82 @@ import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketException;
-import java.util.concurrent.Executors;
+import java.util.concurrent.SynchronousQueue;
 import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 
 /**
- * SMTP socket listener.
- *
- * <p>This runs a ServerSocket bound to configured interface and port.
- * <p>An email receipt instance will be constructed for each accepted connection.
+ * SMTP socket listener for handling client connections.
+ * <p>This class runs a {@link ServerSocket} bound to a configured network interface and port.
+ * <p>For each accepted connection, it creates an {@link EmailReceipt} instance to handle the SMTP session.
+ * <p>It uses a {@link ThreadPoolExecutor} to manage concurrent connections efficiently.
  *
  * @see EmailReceipt
+ * @see Server
  */
 public class SmtpListener {
     private static final Logger log = LogManager.getLogger(SmtpListener.class);
 
     /**
-     * ServerSocket instance.
+     * The underlying server socket that listens for incoming connections.
      */
     private ServerSocket listener;
 
     /**
-     * ThreadPoolExecutor instance.
+     * Thread pool for handling client connections.
+     * Using a ThreadPoolExecutor allows for fine-tuning of thread management,
+     * which is crucial for performance and resource control.
      */
-    private final ThreadPoolExecutor executor = (ThreadPoolExecutor) Executors.newCachedThreadPool();
+    private final ThreadPoolExecutor executor;
 
     /**
-     * Server shutdown boolean.
+     * Flag to indicate a server shutdown is in progress.
+     * This is used to gracefully stop the connection acceptance loop.
      */
-    private boolean serverShutdown = false;
+    private volatile boolean serverShutdown = false;
+
+    private final int port;
+    private final String bind;
+    private final boolean secure;
+    private final boolean submission;
+    private final ListenerConfig config;
 
     /**
-     * Constructs a new SmtpListener instance.
+     * Constructs a new SmtpListener instance with the specified configuration.
      *
-     * @param port    Port number.
-     * @param backlog Backlog size.
-     * @param bind    Interface to bind to.
+     * @param port       The port number to listen on.
+     * @param bind       The network interface address to bind to.
+     * @param config     The {@link ListenerConfig} containing listener-specific settings.
+     * @param secure     {@code true} if the listener should handle secure (TLS) connections.
+     * @param submission {@code true} if the listener is for mail submission (MSA).
      */
-    public SmtpListener(int port, int backlog, String bind) {
-        configure();
+    public SmtpListener(int port, String bind, ListenerConfig config, boolean secure, boolean submission) {
+        this.port = port;
+        this.bind = bind;
+        this.config = config;
+        this.secure = secure;
+        this.submission = submission;
 
-        try (ServerSocket socket = new ServerSocket(port, backlog, InetAddress.getByName(bind))) {
-            listener = socket;
-            log.info("Started listener.");
+        // Initialize and configure the thread pool executor.
+        this.executor = new ThreadPoolExecutor(
+                config.getMinimumPoolSize(),
+                config.getMaximumPoolSize(),
+                config.getThreadKeepAliveTime(), TimeUnit.SECONDS,
+                new SynchronousQueue<>(),
+                new ThreadPoolExecutor.CallerRunsPolicy()
+        );
+    }
 
-            log.info("Expecting connection.");
+    /**
+     * Starts the listener.
+     * <p>This method opens the server socket and enters a loop to accept incoming connections.
+     * Each new connection is passed to the thread pool for processing.
+     */
+    public void listen() {
+        try {
+            listener = new ServerSocket(port, config.getBacklog(), InetAddress.getByName(bind));
+            log.info("Listening to [{}]:{}", bind, port);
+
             acceptConnection();
 
         } catch (IOException e) {
@@ -61,57 +97,144 @@ public class SmtpListener {
 
         } finally {
             try {
-                if (listener != null) {
+                if (listener != null && !listener.isClosed()) {
                     listener.close();
-                    log.info("Closed listener.");
+                    log.info("Closed listener for port {}.", port);
                 }
                 executor.shutdown();
             } catch (Exception e) {
-                log.info("Listener already closed.");
+                log.info("Listener for port {} already closed.", port);
             }
         }
     }
 
     /**
-     * Configure thread pool.
-     */
-    protected void configure() {
-        executor.setKeepAliveTime(Config.getServer().getThreadKeepAliveTime(), TimeUnit.SECONDS);
-        executor.setCorePoolSize(Config.getServer().getMinimumPoolSize());
-        executor.setMaximumPoolSize(Config.getServer().getMaximumPoolSize());
-    }
-
-    /**
-     * Accept incomming connection.
+     * Accepts incoming connections in a loop until a shutdown is initiated.
+     * For each connection, it submits a new {@link EmailReceipt} task to the thread pool.
+     * Connections from blocked IP addresses are immediately rejected.
      */
     private void acceptConnection() {
         try {
             do {
                 Socket sock = listener.accept();
-                log.info("Accepted connection from {}:{}.", sock.getInetAddress().getHostAddress(), sock.getPort());
+                String remoteIp = sock.getInetAddress().getHostAddress();
+
+                // Check if the IP is blocked.
+                if (BlocklistMatcher.isBlocked(remoteIp, Config.getServer().getBlocklistConfig())) {
+                    log.warn("Dropping connection from blocked IP: {}", remoteIp);
+                    try {
+                        sock.close();
+                    } catch (IOException e) {
+                        log.debug("Error closing blocked socket: {}", e.getMessage());
+                    }
+                    continue;
+                }
+
+                // Apply DoS protections if enabled.
+                if (config.isDosProtectionEnabled()) {
+                    if (!checkConnectionLimits(sock, remoteIp)) {
+                        continue; // Connection rejected due to limits.
+                    }
+                }
+
+                log.info("Accepted connection from {}:{} on port {}.", remoteIp, sock.getPort(), port);
+
+                // Record connection for tracking.
+                if (config.isDosProtectionEnabled()) {
+                    ConnectionTracker.recordConnection(remoteIp);
+                }
 
                 executor.submit(() -> {
                     try {
-                        new EmailReceipt(sock).run();
+                        new EmailReceipt(sock, config, secure, submission).run();
+
                     } catch (Exception e) {
+                        SmtpMetrics.incrementEmailReceiptException(e.getClass().getSimpleName());
                         log.error("Email receipt unexpected exception: {}", e.getMessage());
+                    } finally {
+                        // Always record disconnection for proper tracking.
+                        if (config.isDosProtectionEnabled()) {
+                            ConnectionTracker.recordDisconnection(remoteIp);
+                        }
                     }
                     return null;
                 });
             } while (!serverShutdown);
 
         } catch (SocketException e) {
-            log.info("Error in socket exchange: {}", e.getMessage());
-
+            if (!serverShutdown) {
+                log.info("Error in socket exchange: {}", e.getMessage());
+            }
         } catch (IOException e) {
             log.info("Error reading/writing: {}", e.getMessage());
         }
     }
 
     /**
-     * Shutdown.
+     * Checks connection limits for DoS protection.
      *
-     * @throws IOException Unable to communicate.
+     * @param sock     The socket to potentially close.
+     * @param remoteIp The remote IP address.
+     * @return True if connection should be accepted, false if rejected.
+     */
+    private boolean checkConnectionLimits(Socket sock, String remoteIp) {
+        // Check global connection limit.
+        int maxTotal = config.getMaxTotalConnections();
+        if (maxTotal > 0 && ConnectionTracker.getTotalActiveConnections() >= maxTotal) {
+            log.warn("Rejecting connection from {}: global connection limit reached ({} connections)",
+                    remoteIp, maxTotal);
+            SmtpMetrics.incrementDosConnectionLimitRejection();
+            closeSocket(sock);
+            return false;
+        }
+
+        // Check per-IP connection limit.
+        int maxPerIp = config.getMaxConnectionsPerIp();
+        int currentConnections = ConnectionTracker.getActiveConnections(remoteIp);
+        if (maxPerIp > 0 && currentConnections >= maxPerIp) {
+            log.warn("Rejecting connection from {}: per-IP connection limit reached ({}/{} connections)",
+                    remoteIp, currentConnections, maxPerIp);
+            SmtpMetrics.incrementDosConnectionLimitRejection();
+            closeSocket(sock);
+            return false;
+        }
+
+        // Check connection rate limit.
+        int maxPerWindow = config.getMaxConnectionsPerWindow();
+        int windowSeconds = config.getRateLimitWindowSeconds();
+        if (maxPerWindow > 0 && windowSeconds > 0) {
+            int recentConnections = ConnectionTracker.getRecentConnectionCount(remoteIp, windowSeconds);
+            if (recentConnections >= maxPerWindow) {
+                log.warn("Rejecting connection from {}: rate limit exceeded ({} connections in {}s window)",
+                        remoteIp, recentConnections, windowSeconds);
+                SmtpMetrics.incrementDosRateLimitRejection();
+                closeSocket(sock);
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    /**
+     * Safely closes a socket.
+     *
+     * @param sock The socket to close.
+     */
+    private void closeSocket(Socket sock) {
+        try {
+            sock.close();
+        } catch (IOException e) {
+            log.debug("Error closing rejected socket: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Initiates a graceful shutdown of the listener.
+     * <p>This method gracefully shuts down the listener by closing the server socket
+     * and terminating the thread pool.
+     *
+     * @throws IOException If an I/O error occurs when closing the socket.
      */
     public void serverShutdown() throws IOException {
         serverShutdown = true;
@@ -122,11 +245,104 @@ public class SmtpListener {
     }
 
     /**
-     * Gets listener.
+     * Gets the underlying {@link ServerSocket} instance.
      *
-     * @return ServerSocket instance.
+     * @return The {@link ServerSocket} instance.
      */
     public ServerSocket getListener() {
         return listener;
+    }
+
+    /**
+     * Gets the port number this listener is configured to use.
+     *
+     * @return The port number.
+     */
+    public int getPort() {
+        return port;
+    }
+
+    /**
+     * Gets the number of currently active threads in this listener's thread pool.
+     *
+     * @return The number of active threads.
+     */
+    public int getActiveThreads() {
+        return executor.getActiveCount();
+    }
+
+    // Additional thread pool stats for health reporting
+
+    /**
+     * Gets the core number of threads for the thread pool.
+     *
+     * @return The core pool size.
+     */
+    public int getCorePoolSize() {
+        return executor.getCorePoolSize();
+    }
+
+    /**
+     * Gets the maximum allowed number of threads for the thread pool.
+     *
+     * @return The maximum pool size.
+     */
+    public int getMaximumPoolSize() {
+        return executor.getMaximumPoolSize();
+    }
+
+    /**
+     * Gets the current number of threads in the pool.
+     *
+     * @return The current pool size.
+     */
+    public int getPoolSize() {
+        return executor.getPoolSize();
+    }
+
+    /**
+     * Gets the largest number of threads that have ever simultaneously been in the pool.
+     *
+     * @return The largest pool size reached.
+     */
+    public int getLargestPoolSize() {
+        return executor.getLargestPoolSize();
+    }
+
+    /**
+     * Gets the current size of the task queue.
+     * For a {@link SynchronousQueue}, this will always be 0.
+     *
+     * @return The number of tasks in the queue.
+     */
+    public int getQueueSize() {
+        return executor.getQueue() != null ? executor.getQueue().size() : 0;
+    }
+
+    /**
+     * Gets the approximate total number of tasks that have completed execution.
+     *
+     * @return The completed task count.
+     */
+    public long getCompletedTaskCount() {
+        return executor.getCompletedTaskCount();
+    }
+
+    /**
+     * Gets the approximate total number of tasks that have ever been scheduled for execution.
+     *
+     * @return The total task count.
+     */
+    public long getTaskCount() {
+        return executor.getTaskCount();
+    }
+
+    /**
+     * Gets the keep-alive time for idle threads in seconds.
+     *
+     * @return The thread keep-alive time in seconds.
+     */
+    public long getKeepAliveSeconds() {
+        return executor.getKeepAliveTime(TimeUnit.SECONDS);
     }
 }

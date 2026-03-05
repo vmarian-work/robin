@@ -5,6 +5,7 @@ import com.mimecast.robin.assertion.AssertException;
 import com.mimecast.robin.config.client.CaseConfig;
 import com.mimecast.robin.smtp.EmailDelivery;
 import com.mimecast.robin.smtp.connection.Connection;
+import com.mimecast.robin.smtp.session.EmailDirection;
 import com.mimecast.robin.smtp.session.Session;
 
 import javax.naming.ConfigurationException;
@@ -27,6 +28,11 @@ public class Client extends Foundation {
      * Connection instance.
      */
     protected Connection connection;
+
+    /**
+     * Are assertions skipped?
+     */
+    protected Boolean skip = false;
 
     /**
      * Have assertions been skipped?
@@ -83,12 +89,15 @@ public class Client extends Foundation {
         // Delivery Session.
         session = Factories.getSession();
         session.map(caseConfig);
+        session.setDirection(EmailDirection.OUTBOUND);
 
         // Send.
         deliver();
 
         // Assert.
-        assertion(connection);
+        if (!skip) {
+            assertion(connection);
+        }
         return this;
     }
 
@@ -101,7 +110,7 @@ public class Client extends Foundation {
     }
 
     /**
-     * Assert delivery successfull if any.
+     * Assert delivery successful if any.
      *
      * @param connection Connection instance.
      * @throws AssertException Assertion exception.
@@ -111,11 +120,21 @@ public class Client extends Foundation {
     }
 
     /**
+     * Set skip assertions.
+     *
+     * @return Boolean.
+     */
+    public Client setSkip(boolean skip) {
+        this.skip = skip;
+        return this;
+    }
+
+    /**
      * Have assertions been skipped?
      *
      * @return Boolean.
      */
-    public boolean skipped() {
+    public boolean isSkipped() {
         return skipped;
     }
 

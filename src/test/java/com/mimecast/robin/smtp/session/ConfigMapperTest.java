@@ -19,7 +19,7 @@ class ConfigMapperTest {
 
     @BeforeAll
     static void before() throws IOException, ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
 
         caseConfig = new CaseConfig("src/test/resources/mapper.json5");
     }
@@ -42,7 +42,7 @@ class ConfigMapperTest {
         assertEquals("example.com", session.getEhlo());
         assertTrue(session.isAuth());
         assertEquals("tony@example.com", session.getUsername());
-        assertEquals("giveHerTheRing", session.getPassword());
+        assertEquals("stark", session.getPassword());
 
         List<MessageEnvelope> envelopes = session.getEnvelopes();
         assertEquals("tony@example.com", envelopes.get(0).getMail());

@@ -1,5 +1,5 @@
 {
-  $schema: "/schema/case.schema.json",
+  $schema: "../../main/resources/schema/case.schema.json",
 
   route: "net",
   timeout: 30,
@@ -13,7 +13,7 @@
   auth: true,
   authBeforeTls: true,
   user: "tony@example.com",
-  pass: "giveHerTheRing",
+  pass: "stark",
 
   envelopes: [
     {
@@ -21,7 +21,7 @@
       chunkBdat: true,
       chunkWrite: true,
 
-      file: "src/test/resources/lipsum.eml",
+      file: "src/test/resources/mime/lipsum.eml",
       folder: "src/test/resources/",
 
       mail: "tony@example.com",

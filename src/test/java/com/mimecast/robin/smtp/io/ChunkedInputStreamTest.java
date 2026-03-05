@@ -20,10 +20,10 @@ class ChunkedInputStreamTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
 
         envelope = new MessageEnvelope();
-        envelope.setFile("src/test/resources/lipsum.eml");
+        envelope.setFile("src/test/resources/mime/lipsum.eml");
         envelope.setChunkBdat(true);
     }
 

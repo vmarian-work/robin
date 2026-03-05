@@ -1,15 +1,25 @@
 package com.mimecast.robin.smtp.extension.server;
 
+import com.mimecast.robin.config.server.ListenerConfig;
 import com.mimecast.robin.config.server.ScenarioConfig;
+import com.mimecast.robin.config.server.WebhookConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Factories;
+import com.mimecast.robin.smtp.ProxyEmailDelivery;
+import com.mimecast.robin.smtp.SmtpResponses;
 import com.mimecast.robin.smtp.connection.Connection;
+import com.mimecast.robin.smtp.metrics.SmtpMetrics;
+import com.mimecast.robin.smtp.security.SlowTransferOutputStream;
 import com.mimecast.robin.smtp.verb.BdatVerb;
 import com.mimecast.robin.smtp.verb.Verb;
+import com.mimecast.robin.smtp.webhook.WebhookCaller;
+import com.mimecast.robin.smtp.webhook.WebhookResponse;
 import com.mimecast.robin.storage.StorageClient;
 import org.apache.commons.io.output.CountingOutputStream;
 
+import javax.naming.LimitExceededException;
 import java.io.IOException;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -21,6 +31,35 @@ public class ServerData extends ServerProcessor {
      * Number of MIME bytes received.
      */
     protected long bytesReceived = 0L;
+
+    /**
+     * Envelope limit.
+     */
+    private int emailSizeLimit = 10242400; // 10 MB.
+
+    /**
+     * Listener configuration for DoS protections.
+     */
+    private ListenerConfig listenerConfig;
+
+    /**
+     * Gets the ListenerConfig if connection was created with one.
+     *
+     * @return ListenerConfig or null.
+     */
+    private ListenerConfig getListenerConfig() {
+        return listenerConfig;
+    }
+
+    /**
+     * Sets listener configuration.
+     *
+     * @param listenerConfig Listener configuration.
+     */
+    public void setListenerConfig(ListenerConfig listenerConfig) {
+        this.listenerConfig = listenerConfig;
+    }
+
 
     /**
      * CHUNKING advert.
@@ -45,13 +84,21 @@ public class ServerData extends ServerProcessor {
         super.process(connection, verb);
 
         if (verb.getKey().equals("bdat")) {
-            binary();
+            if (!binary()) {
+                log.debug("Received: {} bytes", bytesReceived);
+                return false;
+            }
             log.debug("Received: {} bytes", bytesReceived);
 
         } else if (verb.getKey().equals("data")) {
-            ascii();
-            log.debug("Received: {} bytes", bytesReceived);
+            if (!ascii()) {
+                log.debug("Received: {} bytes", bytesReceived);
+                return false;
+            }
         }
+
+        // Track successful email receipt.
+        SmtpMetrics.incrementEmailReceiptSuccess();
 
         return true;
     }
@@ -59,22 +106,157 @@ public class ServerData extends ServerProcessor {
     /**
      * ASCII receipt with extended timeout.
      *
+     * @return Boolean.
      * @throws IOException Unable to communicate.
      */
-    private void ascii() throws IOException {
-        if (connection.getSession().getRcpts().isEmpty()) {
-            connection.write("554 5.5.1 No valid recipients [" + connection.getSession().getUID() + "]");
-            return;
+    private boolean ascii() throws IOException {
+        // Check if this envelope should be proxied (check session for active proxy connections).
+        if (!connection.getSession().getEnvelopes().isEmpty() && hasActiveProxyConnection()) {
+            // Proxy mode - stream email to proxy server.
+            return handleProxyData();
         }
 
-        // Read email lines and store to disk.
-        StorageClient storageClient = asciiRead("eml");
+        // Check if envelope is blackholed.
+        if (!connection.getSession().getEnvelopes().isEmpty() && connection.getSession().getEnvelopes().getLast().isBlackholed()) {
+            // Blackholed email - read data but don't store or call webhooks.
+            try {
+                if (!asciiReadBlackhole("eml")) {
+                    return false;
+                }
+            } catch (LimitExceededException e) {
+                connection.write(String.format(SmtpResponses.MESSAGE_SIZE_LIMIT_EXCEEDED_552, connection.getSession().getUID()));
+                return false;
+            }
+        } else {
+            if (connection.getSession().getEnvelopes().isEmpty() || connection.getSession().getEnvelopes().getLast().getRcpts().isEmpty()) {
+                connection.write(String.format(SmtpResponses.NO_VALID_RECIPIENTS_554, connection.getSession().getUID()));
+                return false;
+            }
 
+            // Read email lines and store to disk.
+            try {
+                if (!asciiRead("eml")) {
+                    return false;
+                }
+            } catch (LimitExceededException e) {
+                connection.write(String.format(SmtpResponses.MESSAGE_SIZE_LIMIT_EXCEEDED_552, connection.getSession().getUID()));
+                return false;
+            }
+
+            // Call RAW webhook after successful storage.
+            if (!callRawWebhook()) {
+                return false;
+            }
+        }
+
+        // Send scenario response or accept message.
         Optional<ScenarioConfig> opt = connection.getScenario();
         if (opt.isPresent() && opt.get().getData() != null) {
-            connection.write(opt.get().getData() + " [" +  connection.getSession().getUID() + "]");
+            connection.write(opt.get().getData() + " [" + connection.getSession().getUID() + "]");
         } else {
-            connection.write("250 2.0.0 Received OK [" +  connection.getSession().getUID() + "]");
+            connection.write(String.format(SmtpResponses.RECEIVED_OK_250, connection.getSession().getUID()));
+        }
+
+        return true;
+    }
+
+    /**
+     * Checks if there is an active proxy connection for the current envelope.
+     *
+     * @return true if proxy connection exists and is active.
+     */
+    private boolean hasActiveProxyConnection() {
+        // Check all proxy connections in session for active ProxyEmailDelivery instances.
+        for (Object conn : connection.getSession().getProxyConnections().values()) {
+            if (conn instanceof ProxyEmailDelivery) {
+                ProxyEmailDelivery delivery = (ProxyEmailDelivery) conn;
+                if (delivery.isConnected()) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Gets the active proxy connection for the current envelope.
+     *
+     * @return ProxyEmailDelivery instance or null if none active.
+     */
+    private ProxyEmailDelivery getActiveProxyConnection() {
+        for (Object conn : connection.getSession().getProxyConnections().values()) {
+            if (conn instanceof ProxyEmailDelivery) {
+                ProxyEmailDelivery delivery = (ProxyEmailDelivery) conn;
+                if (delivery.isConnected() && delivery.isForCurrentEnvelope(
+                        connection.getSession().getEnvelopes().getLast())) {
+                    return delivery;
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Handles proxying email data to another SMTP server.
+     * <p>Streams the received email to the proxy connection after storage processors accept it.
+     * <p>Connection remains open for reuse with subsequent envelopes.
+     *
+     * @return Boolean indicating success.
+     * @throws IOException Unable to communicate.
+     */
+    private boolean handleProxyData() throws IOException {
+        if (connection.getSession().getEnvelopes().isEmpty()) {
+            connection.write(String.format(SmtpResponses.NO_VALID_RECIPIENTS_554, connection.getSession().getUID()));
+            return false;
+        }
+
+        ProxyEmailDelivery proxyDelivery = getActiveProxyConnection();
+
+        if (proxyDelivery == null || !proxyDelivery.isConnected()) {
+            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+            return false;
+        }
+
+        // Read and temporarily store the email for proxy transmission.
+        try {
+            if (!asciiRead("eml")) {
+                return false;
+            }
+        } catch (LimitExceededException e) {
+            connection.write(String.format(SmtpResponses.MESSAGE_SIZE_LIMIT_EXCEEDED_552, connection.getSession().getUID()));
+            // Don't close - connection may be reused for next envelope.
+            return false;
+        }
+
+        // Call RAW webhook after successful storage.
+        if (!callRawWebhook()) {
+            // Don't close - connection may be reused for next envelope.
+            return false;
+        }
+
+        // Stream the email to the proxy server via DATA command.
+        try {
+            boolean proxySuccess = proxyDelivery.sendData();
+
+            // DO NOT close the connection - it will be reused for subsequent envelopes.
+            // Connection is closed only when session ends (in EmailReceipt finally block).
+
+            if (proxySuccess) {
+                // Return success to the original client.
+                connection.write(String.format(SmtpResponses.RECEIVED_OK_250, connection.getSession().getUID()));
+                log.info("Email successfully proxied to remote server (connection remains open for reuse)");
+                return true;
+            } else {
+                // Proxy failed, return error to client.
+                connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+                log.error("Proxy server rejected email");
+                return false;
+            }
+        } catch (IOException e) {
+            log.error("Failed to proxy email data: {}", e.getMessage());
+            // Don't close - let session cleanup handle it.
+            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+            return false;
         }
     }
 
@@ -82,53 +264,139 @@ public class ServerData extends ServerProcessor {
      * ASCII read.
      *
      * @param extension File extension.
-     * @return StorageClient StorageClient instance.
-     * @throws IOException Unable to communicate.
+     * @return Boolean.
+     * @throws IOException            Unable to communicate.
+     * @throws LimitExceededException Limit exceeded.
      */
-    protected StorageClient asciiRead(String extension) throws IOException {
-        connection.write("354 Ready and willing");
+    protected boolean asciiRead(String extension) throws IOException, LimitExceededException {
+        connection.write(SmtpResponses.READY_WILLING_354);
 
         StorageClient storageClient = Factories.getStorageClient(connection, extension);
+        ListenerConfig config = getListenerConfig();
 
         try (CountingOutputStream cos = new CountingOutputStream(storageClient.getStream())) {
             connection.setTimeout(connection.getSession().getExtendedTimeout());
-            connection.readMultiline(cos);
-            bytesReceived = cos.getByteCount();
 
+            // Apply DoS protections if enabled.
+            if (config != null && config.isDosProtectionEnabled()) {
+                SlowTransferOutputStream dosStream = new SlowTransferOutputStream(
+                        cos,
+                        config.getMinDataRateBytesPerSecond(),
+                        config.getMaxDataTimeoutSeconds(),
+                        connection.getSession().getFriendAddr()
+                );
+                connection.readMultiline(dosStream, emailSizeLimit);
+                bytesReceived = cos.getByteCount();
+
+                // Check if slow transfer was detected.
+                if (dosStream.isSlowTransferDetected()) {
+                    connection.setTimeout(connection.getSession().getTimeout());
+                    SmtpMetrics.incrementDosSlowTransferRejection();
+                    connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID())
+                            + " Slow transfer detected");
+                    return false;
+                }
+            } else {
+                // No DoS protection, use normal stream.
+                connection.readMultiline(cos, emailSizeLimit);
+                bytesReceived = cos.getByteCount();
+            }
         } finally {
             connection.setTimeout(connection.getSession().getTimeout());
         }
 
-        storageClient.save();
+        if (!storageClient.save()) {
+            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+            return false;
+        }
 
-        return storageClient;
+        return true;
+    }
+
+    /**
+     * ASCII read for blackholed emails - reads data but doesn't save.
+     *
+     * @param extension File extension.
+     * @return Boolean.
+     * @throws IOException            Unable to communicate.
+     * @throws LimitExceededException Limit exceeded.
+     */
+    protected boolean asciiReadBlackhole(String extension) throws IOException, LimitExceededException {
+        connection.write(SmtpResponses.READY_WILLING_354);
+
+        // Use a NullOutputStream to discard the data.
+        try (CountingOutputStream cos = new CountingOutputStream(java.io.OutputStream.nullOutputStream())) {
+            connection.setTimeout(connection.getSession().getExtendedTimeout());
+            connection.readMultiline(cos, emailSizeLimit);
+            bytesReceived = cos.getByteCount();
+        } finally {
+            connection.setTimeout(connection.getSession().getTimeout());
+        }
+
+        log.info("Blackholed email - {} bytes received but not saved", bytesReceived);
+        return true;
     }
 
     /**
      * Binary receipt.
+     * TODO: Support multiple BDAT chunks.
      *
+     * @return Boolean.
      * @throws IOException Unable to communicate.
      */
-    private void binary() throws IOException {
+    private boolean binary() throws IOException {
         BdatVerb bdatVerb = new BdatVerb(verb);
 
         if (verb.getCount() == 1) {
-            connection.write("501 5.5.4 Invalid arguments");
-        } else {
-            // Read bytes.
-            StorageClient storageClient = Factories.getStorageClient(connection, "eml");
-            CountingOutputStream cos = new CountingOutputStream(storageClient.getStream());
-            binaryRead(bdatVerb, cos);
-            bytesReceived = cos.getByteCount();
+            connection.write(SmtpResponses.INVALID_ARGS_501);
+            return false;
 
-            if (bdatVerb.isLast()) {
-                log.debug("Last chunk received.");
-                storageClient.save();
+        } else if (bdatVerb.getSize() > emailSizeLimit) {
+            connection.write(String.format(SmtpResponses.MESSAGE_SIZE_LIMIT_EXCEEDED_552, connection.getSession().getUID()));
+            return false;
+
+        } else {
+            // Check if envelope is blackholed.
+            boolean isBlackholed = !connection.getSession().getEnvelopes().isEmpty() &&
+                    connection.getSession().getEnvelopes().getLast().isBlackholed();
+
+            if (isBlackholed) {
+                // Blackholed email - read bytes but don't store.
+                CountingOutputStream cos = new CountingOutputStream(java.io.OutputStream.nullOutputStream());
+
+                binaryRead(bdatVerb, cos);
+                bytesReceived = cos.getByteCount();
+
+                if (bdatVerb.isLast()) {
+                    log.info("Blackholed email - {} bytes received but not saved", bytesReceived);
+                }
+            } else {
+                // Read bytes.
+                StorageClient storageClient = Factories.getStorageClient(connection, "eml");
+                CountingOutputStream cos = new CountingOutputStream(storageClient.getStream());
+
+                binaryRead(bdatVerb, cos);
+                bytesReceived = cos.getByteCount();
+
+                if (bdatVerb.isLast()) {
+                    log.debug("Last chunk received.");
+                    if (!storageClient.save()) {
+                        connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+                        return false;
+                    }
+                }
+
+                // Call RAW webhook after successful storage.
+                if (!callRawWebhook()) {
+                    return false;
+                }
             }
 
             // Scenario response or accept.
-            scenarioResponse( connection.getSession().getUID());
+            scenarioResponse(connection.getSession().getUID());
         }
+
+        return true;
     }
 
     /**
@@ -150,6 +418,17 @@ public class ServerData extends ServerProcessor {
     }
 
     /**
+     * Sets email size limit.
+     *
+     * @param limit Limit value.
+     * @return ServerData instance.
+     */
+    public ServerData setEmailSizeLimit(int limit) {
+        this.emailSizeLimit = limit;
+        return this;
+    }
+
+    /**
      * Scenario response.
      *
      * @param uid UID.
@@ -163,8 +442,57 @@ public class ServerData extends ServerProcessor {
 
         // Accept all.
         else {
-            connection.write("250 2.0.0 Chunk OK [" + uid + "]");
+            connection.write(String.format(SmtpResponses.CHUNK_OK_250, uid));
         }
+    }
+
+    /**
+     * Calls RAW webhook if configured.
+     *
+     * @return Boolean indicating whether to continue processing.
+     * @throws IOException Unable to communicate.
+     */
+    private boolean callRawWebhook() throws IOException {
+        try {
+            Map<String, WebhookConfig> webhooks = Config.getServer().getWebhooks();
+
+            String filePath = connection.getSession().getEnvelopes().isEmpty() ? null :
+                    connection.getSession().getEnvelopes().getLast().getFile();
+            if (filePath == null || filePath.isEmpty()) {
+                return true;
+            }
+
+            if (webhooks.containsKey("raw")) {
+                WebhookConfig rawCfg = webhooks.get("raw");
+                if (rawCfg.isEnabled()) {
+                    log.debug("Calling RAW webhook with file: {}", filePath);
+                    WebhookResponse response = WebhookCaller.callRaw(rawCfg, filePath, connection);
+                    String smtpResponse = WebhookCaller.extractSmtpResponse(response.getBody());
+                    if (smtpResponse != null) {
+                        connection.write(smtpResponse + " [" + connection.getSession().getUID() + "]");
+                        return !smtpResponse.startsWith("4") && !smtpResponse.startsWith("5"); // Stop processing, webhook provided response.
+                    }
+
+                    if (!response.isSuccess()) {
+                        WebhookConfig config = webhooks.get("raw");
+                        if (config.isIgnoreErrors()) {
+                            log.warn("RAW webhook failed but ignoring errors: {}", response.getStatusCode());
+                            return true; // Continue processing despite error.
+                        } else {
+                            // Send 451 temporary error.
+                            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+                            return false; // Stop processing.
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.error("Error calling RAW webhook: {}", e.getMessage());
+            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+            return false;
+        }
+
+        return true;
     }
 
     /**

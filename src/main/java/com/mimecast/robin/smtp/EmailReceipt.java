@@ -1,15 +1,32 @@
 package com.mimecast.robin.smtp;
 
+import com.mimecast.robin.config.server.ListenerConfig;
+import com.mimecast.robin.config.server.WebhookConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Extensions;
+import com.mimecast.robin.scanners.rbl.RblChecker;
+import com.mimecast.robin.scanners.rbl.RblResult;
 import com.mimecast.robin.smtp.connection.Connection;
 import com.mimecast.robin.smtp.extension.Extension;
+import com.mimecast.robin.smtp.extension.server.ServerData;
+import com.mimecast.robin.smtp.extension.server.ServerMail;
+import com.mimecast.robin.smtp.extension.server.ServerProcessor;
+import com.mimecast.robin.smtp.extension.server.ServerRcpt;
+import com.mimecast.robin.smtp.metrics.SmtpMetrics;
+import com.mimecast.robin.smtp.security.ConnectionTracker;
+import com.mimecast.robin.smtp.session.EmailDirection;
 import com.mimecast.robin.smtp.verb.Verb;
+import com.mimecast.robin.smtp.webhook.WebhookCaller;
+import com.mimecast.robin.smtp.webhook.WebhookResponse;
+import com.mimecast.robin.util.Sleep;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.ThreadContext;
 
 import java.io.IOException;
 import java.net.Socket;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 /**
@@ -28,16 +45,21 @@ public class EmailReceipt implements Runnable {
     protected Connection connection;
 
     /**
-     * Transactions limitation.
-     * <p>Limits how many commands will be processed.
+     * Listener config instance.
      */
-    private final int transactionsLimit = Config.getServer().getTransactionsLimit();
+    private ListenerConfig config = new ListenerConfig();
 
     /**
      * Error limitation.
-     * <p>Limits how many eronious commands will be permitted.
+     * <p>Limits how many erroneous commands will be permitted.
      */
-    private int errorLimit = Config.getServer().getErrorLimit();
+    private int errorLimit = 3;
+
+    /**
+     * Tarpit violation counter.
+     * <p>Tracks how many times this connection has violated rate limits for progressive delays.
+     */
+    private int tarpitViolations = 0;
 
     /**
      * Constructs a new EmailReceipt instance with given Connection instance.
@@ -52,11 +74,38 @@ public class EmailReceipt implements Runnable {
     /**
      * Constructs a new EmailReceipt instance with given socket.
      *
-     * @param socket Inbound socket.
+     * @param socket     Inbound socket.
+     * @param config     Listener configuration instance.
+     * @param secure     Secure (TLS) listener.
+     * @param submission Submission (MSA) listener.
      */
-    public EmailReceipt(Socket socket) {
+    public EmailReceipt(Socket socket, ListenerConfig config, boolean secure, boolean submission) {
         try {
+            ThreadContext.put("aCode", "");
+            ThreadContext.put("bCode", "");
+            ThreadContext.put("cCode", "");
+
             connection = new Connection(socket);
+            this.config = config;
+            errorLimit = config.getErrorLimit();
+
+            // Enable TLS handling if secure listener.
+            if (secure) {
+                connection.startTLS(false);
+                connection.getSession().setStartTls(true);
+                connection.buildStreams();
+                connection.getSession().setTls(true);
+                connection.getSession().setSecurePort(true);
+            }
+
+            // Set session direction depending on if submission port or not.
+            connection.getSession().setDirection(submission ? EmailDirection.OUTBOUND : EmailDirection.INBOUND);
+            log.debug("Created EmailReceipt for {}:{} (secure={}, submission={}) {}",
+                    socket.getInetAddress().getHostAddress(),
+                    socket.getPort(),
+                    secure,
+                    submission,
+                    connection.getSession().getDirection().toString());
         } catch (IOException e) {
             log.info("Error initializing streams: {}", e.getMessage());
         }
@@ -72,30 +121,122 @@ public class EmailReceipt implements Runnable {
      */
     public void run() {
         try {
-            connection.write("220 " + Config.getServer().getHostname() + " Robin ready at " + connection.getSession().getRdns() + " with ESMTP; " + connection.getSession().getDate());
+            // Check client against RBLs and send appropriate greeting.
+            // If blacklisted and inbound non-secure, send rejection.
+            // Secure connections will perform RBL check at MAIL command.
+            if (connection.getSession().isInbound() &&
+                    !connection.getSession().isSecurePort() &&
+                    !isReputableIp()) {
+                // Send rejection message for blacklisted IP.
+                connection.write(String.format(SmtpResponses.LISTED_CLIENT_550, connection.getSession().getUID()));
+                return;
+            } else {
+                // Send normal welcome message for clean IPs.
+                connection.write(String.format(SmtpResponses.GREETING_220, Config.getServer().getHostname(),
+                        connection.getSession().getRdns(), connection.getSession().getDate()));
+            }
+
+            // Track successful connection.
+            SmtpMetrics.incrementEmailReceiptStart();
 
             Verb verb;
-            for (int i = 0; i < transactionsLimit; i++) {
+            for (int i = 0; i < config.getTransactionsLimit(); i++) {
                 String read = connection.read().trim();
+                if (read.isEmpty()) {
+                    log.error("Read empty, breaking.");
+                    break;
+                }
                 verb = new Verb(read);
+
+                // Apply DoS protections before processing command.
+                if (config.isDosProtectionEnabled()) {
+                    if (!checkCommandRateLimits()) {
+                        break; // Disconnect due to rate limit violation.
+                    }
+                }
 
                 // Don't process if error.
                 if (!isError(verb)) process(verb);
+
+                // Special handling for MAIL command on secure inbound connections.
+                // Perform RBL check here once we know the connection is not outbound.
+                // Secure port supports submission when authenticated.
+                if (verb.getVerb().equalsIgnoreCase("mail") &&
+                        connection.getSession().isInbound() &&
+                        connection.getSession().isSecurePort() &&
+                        !isReputableIp()) {
+                    // Send rejection message for blacklisted IP.
+                    connection.write(String.format(SmtpResponses.LISTED_CLIENT_550, connection.getSession().getUID()));
+                    break;
+                }
 
                 // Break the loop.
                 // Break if error limit reached.
                 if (verb.getCommand().equalsIgnoreCase("quit") || errorLimit <= 0) {
                     if (errorLimit <= 0) {
                         log.warn("Error limit reached.");
+                        SmtpMetrics.incrementEmailReceiptLimit();
                     }
                     break;
                 }
             }
-        } catch (IOException e) {
+        } catch (Exception e) {
+            SmtpMetrics.incrementEmailReceiptException(e.getClass().getSimpleName());
             log.info("Error reading/writing: {}", e.getMessage());
+        } finally {
+            connection.getSession().closeProxyConnections();
+
+            if (Config.getServer().getStorage().getBooleanProperty("autoDelete", true)) {
+                connection.getSession().close();
+            }
+            connection.close();
+        }
+    }
+
+    /**
+     * Performs RBL check on client IP.
+     *
+     * @return true if blacklist check passed or not enabled, false if blacklisted.
+     */
+    private boolean isReputableIp() {
+        String clientIp = connection.getSession().getFriendAddr();
+        boolean isBlacklisted = false;
+        String blacklistingRbl = null;
+
+        // Only perform RBL check if enabled in configuration.
+        if (Config.getServer().getRblConfig().isEnabled()) {
+            log.debug("Checking IP {} against RBL lists", clientIp);
+
+            List<String> rblProviders = Config.getServer().getRblConfig().getProviders();
+            int timeoutSeconds = Config.getServer().getRblConfig().getTimeoutSeconds();
+
+            // Check the client IP against configured RBL providers.
+            List<RblResult> results = RblChecker.checkIpAgainstRbls(clientIp, rblProviders, timeoutSeconds);
+
+            // Find the first RBL that lists this IP (if any).
+            Optional<RblResult> blacklisted = results.stream()
+                    .filter(RblResult::isListed)
+                    .findFirst();
+
+            if (blacklisted.isPresent()) {
+                isBlacklisted = true;
+                blacklistingRbl = blacklisted.get().getRblProvider();
+                log.info("Client IP {} is blacklisted by {}", clientIp, blacklistingRbl);
+            }
         }
 
-        connection.close();
+        // Update session with RBL status and provider.
+        connection.getSession()
+                .setFriendInRbl(isBlacklisted)
+                .setFriendRbl(blacklistingRbl);
+
+        // Send appropriate greeting or rejection based on RBL status and enablement.
+        if (isBlacklisted && Config.getServer().getRblConfig().isRejectEnabled()) {
+            // Track rejected connections due to RBL listing.
+            SmtpMetrics.incrementEmailRblRejection();
+        }
+
+        return !isBlacklisted;
     }
 
     /**
@@ -107,7 +248,7 @@ public class EmailReceipt implements Runnable {
      */
     private boolean isError(Verb verb) throws IOException {
         if (verb.isError()) {
-            connection.write("500 Syntax error");
+            connection.write(SmtpResponses.SYNTAX_ERROR_500);
             errorLimit--;
             return true;
         }
@@ -122,19 +263,167 @@ public class EmailReceipt implements Runnable {
      * @throws IOException Unable to communicate.
      */
     private void process(Verb verb) throws IOException {
-        if (Extensions.isExtension(verb)) {
-            Optional<Extension> opt = Extensions.getExtension(verb);
-            if (opt.isPresent()) {
-                opt.get().getServer().process(connection, verb);
+        // Check for XCLIENT extension separately due to security flag requirement.
+        if ("XCLIENT".equalsIgnoreCase(verb.getKey())) {
+            if (Config.getServer().isXclientEnabled()) {
+                // XCLIENT is enabled, process as normal extension.
+                processExtension(verb);
+            } else {
+                // XCLIENT is disabled, reject the command.
+                handleUnrecognizedCommand();
             }
+            return;
+        }
+
+        // Process all other extensions.
+        if (Extensions.isExtension(verb)) {
+            processExtension(verb);
         } else {
-            errorLimit--;
-            if (errorLimit == 0) {
-                log.warn("Error limit reached.");
-                return;
+            handleUnrecognizedCommand();
+        }
+    }
+
+    /**
+     * Process an extension by calling webhook and then the server processor.
+     *
+     * @param verb Verb instance.
+     * @throws IOException Unable to communicate.
+     */
+    private void processExtension(Verb verb) throws IOException {
+        Optional<Extension> opt = Extensions.getExtension(verb);
+        if (opt.isPresent()) {
+            // Call webhook before processing extension.
+            if (!processWebhook(verb)) {
+                return; // Webhook intercepted processing.
             }
 
-            connection.write("500 5.3.3 Unrecognized command");
+            ServerProcessor server = opt.get().getServer();
+
+            // Set limit if applicable.
+            if (server instanceof ServerMail) {
+                ((ServerMail) server).setEnvelopeLimit(config.getEnvelopeLimit());
+            }
+            if (server instanceof ServerRcpt) {
+                ((ServerRcpt) server).setRecipientsLimit(config.getRecipientsLimit());
+            }
+            if (server instanceof ServerData) {
+                ((ServerData) server).setEmailSizeLimit(config.getEmailSizeLimit());
+                ((ServerData) server).setListenerConfig(config);
+            }
+
+            server.process(connection, verb);
         }
+    }
+
+    /**
+     * Handle unrecognized command by incrementing error counter and sending error response.
+     *
+     * @throws IOException Unable to communicate.
+     */
+    private void handleUnrecognizedCommand() throws IOException {
+        errorLimit--;
+        if (errorLimit == 0) {
+            log.warn("Error limit reached.");
+            return;
+        }
+        connection.write(SmtpResponses.UNRECOGNIZED_CMD_500);
+    }
+
+    /**
+     * Process webhook for extension if configured.
+     *
+     * @param verb Verb instance.
+     * @return True to continue processing, false to stop.
+     * @throws IOException Unable to communicate.
+     */
+    private boolean processWebhook(Verb verb) throws IOException {
+        try {
+            Map<String, WebhookConfig> webhooks = Config.getServer().getWebhooks();
+            String extensionKey = verb.getKey().toLowerCase();
+
+            if (webhooks.containsKey(extensionKey)) {
+                WebhookConfig config = webhooks.get(extensionKey);
+
+                if (!config.isEnabled()) {
+                    return true; // Continue processing.
+                }
+
+                log.debug("Calling webhook for extension: {}", extensionKey);
+                WebhookResponse response = WebhookCaller.call(config, connection, verb);
+
+                // Check if webhook returned a custom SMTP response.
+                String smtpResponse = WebhookCaller.extractSmtpResponse(response.getBody());
+                if (smtpResponse != null && !smtpResponse.isEmpty()) {
+                    connection.write(smtpResponse + " [" + connection.getSession().getUID() + "]");
+                    return !smtpResponse.startsWith("4") && !smtpResponse.startsWith("5"); // Stop processing, webhook provided response.
+                }
+
+                // Check response status.
+                if (!response.isSuccess()) {
+                    if (config.isIgnoreErrors()) {
+                        log.warn("Webhook failed but ignoring errors: {}", response.getStatusCode());
+                        return true; // Continue processing despite error.
+                    } else {
+                        // Send 451 temporary error.
+                        connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+                        return false; // Stop processing.
+                    }
+                }
+
+                // 200 OK - continue processing.
+                return true;
+            }
+        } catch (Exception e) {
+            log.error("Error processing webhook: {}", e.getMessage());
+            connection.write(String.format(SmtpResponses.INTERNAL_ERROR_451, connection.getSession().getUID()));
+            return false;
+        }
+
+        return true; // No webhook configured, continue processing.
+    }
+
+    /**
+     * Checks command rate limits for DoS protection.
+     * <p>Implements progressive tarpit delays for repeated violations.
+     *
+     * @return True if command should be processed, false to disconnect.
+     * @throws IOException Unable to communicate.
+     */
+    private boolean checkCommandRateLimits() throws IOException {
+        String clientIp = connection.getSession().getFriendAddr();
+
+        // Record command for this IP.
+        ConnectionTracker.recordCommand(clientIp);
+
+        // Check if command rate limit is exceeded.
+        int maxCommandsPerMinute = config.getMaxCommandsPerMinute();
+        if (maxCommandsPerMinute > 0) {
+            int commandsPerMinute = ConnectionTracker.getCommandsPerMinute(clientIp);
+
+            if (commandsPerMinute > maxCommandsPerMinute) {
+                tarpitViolations++;
+                log.warn("Command rate limit exceeded for {}: {} commands/min (limit: {}), violation #{}",
+                        clientIp, commandsPerMinute, maxCommandsPerMinute, tarpitViolations);
+
+                // Apply progressive tarpit delay.
+                int baseDelay = config.getTarpitDelayMillis();
+                if (baseDelay > 0) {
+                    int delay = baseDelay * tarpitViolations; // Progressive delay.
+                    log.info("Applying tarpit delay of {}ms to {}", delay, clientIp);
+                    SmtpMetrics.incrementDosTarpit();
+                    Sleep.nap(delay);
+                }
+
+                // Disconnect after multiple violations (3 strikes).
+                if (tarpitViolations >= 3) {
+                    log.warn("Disconnecting {} after {} tarpit violations", clientIp, tarpitViolations);
+                    SmtpMetrics.incrementDosCommandFloodRejection();
+                    connection.write(SmtpResponses.CLOSING_221 + " [" + connection.getSession().getUID() + "]");
+                    return false;
+                }
+            }
+        }
+
+        return true;
     }
 }

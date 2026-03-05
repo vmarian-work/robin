@@ -1,0 +1,30 @@
+{
+  // Queue cron initial run delay (in seconds).
+  queueInitialDelay: 10,
+
+  // Queue cron processing interval (in seconds).
+  queueInterval: 30,
+
+  // Maximum number of messages to attempt to relay per cron tick.
+  maxDequeuePerTick: 10,
+
+  // MapDB backend configuration (disabled for tests - using in-memory instead).
+  queueMapDB: {
+    enabled: false
+  },
+
+  // Redis backend configuration (disabled for tests).
+  queueRedis: {
+    enabled: false
+  },
+
+  // MariaDB backend configuration (disabled for tests).
+  queueMariaDB: {
+    enabled: false
+  },
+
+  // PostgreSQL backend configuration (disabled for tests).
+  queuePgSQL: {
+    enabled: false
+  }
+}

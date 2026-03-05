@@ -13,7 +13,7 @@ class ServerConfigTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     @Test
@@ -22,18 +22,8 @@ class ServerConfigTest {
     }
 
     @Test
-    void getPort() {
-        assertEquals(25, Config.getServer().getPort());
-    }
-
-    @Test
-    void getBacklog() {
-        assertEquals(20, Config.getServer().getBacklog());
-    }
-
-    @Test
-    void getErrorLimit() {
-        assertEquals(3, Config.getServer().getErrorLimit());
+    void getSmtpPort() {
+        assertEquals(25, Config.getServer().getSmtpPort());
     }
 
     @Test
@@ -63,18 +53,34 @@ class ServerConfigTest {
 
     @Test
     void getUsers() {
-        assertEquals(1, Config.getServer().getUsers().size());
+        assertEquals(3, Config.getServer().getUsers().getList().size());
     }
 
     @Test
     void getUser() {
         // Tested in UserConfigTest.
-        assertTrue(Config.getServer().getUser("tony@example.com").isPresent());
+        assertTrue(Config.getServer().getUsers().getUser("tony@example.com").isPresent());
     }
 
     @Test
     void getScenarios() {
         // Tested in ScenarioConfigTest.
         assertFalse(Config.getServer().getScenarios().isEmpty());
+    }
+
+    @Test
+    void getBlocklistConfig() {
+        BlocklistConfig blocklistConfig = Config.getServer().getBlocklistConfig();
+        assertNotNull(blocklistConfig, "Blocklist config should not be null");
+        assertTrue(blocklistConfig.isEnabled(), "Blocklist should be enabled in test config");
+        assertEquals(3, blocklistConfig.getEntries().size(), "Should have 3 blocklist entries");
+        assertTrue(blocklistConfig.getEntries().contains("192.168.100.100"), "Should contain test IP");
+        assertTrue(blocklistConfig.getEntries().contains("10.0.0.0/8"), "Should contain test CIDR");
+    }
+
+    @Test
+    void isXclientEnabled() {
+        // Test config has xclientEnabled set to true for testing
+        assertTrue(Config.getServer().isXclientEnabled(), "XCLIENT should be enabled in test config");
     }
 }

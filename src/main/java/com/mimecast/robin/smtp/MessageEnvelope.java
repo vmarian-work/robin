@@ -6,7 +6,10 @@ import com.mimecast.robin.main.Config;
 import com.mimecast.robin.util.PathUtils;
 import org.apache.commons.lang3.StringUtils;
 
+import java.io.ByteArrayInputStream;
 import java.io.InputStream;
+import java.io.Serial;
+import java.io.Serializable;
 import java.text.SimpleDateFormat;
 import java.util.*;
 import java.util.stream.Collectors;
@@ -16,9 +19,11 @@ import java.util.stream.Stream;
  * Message envelope.
  *
  * <p>This is the container for SMTP envelopes.
- * <p>It will store the meta data associated with each email sent.
+ * <p>It will store the metadata associated with each email sent.
  */
-public class MessageEnvelope {
+public class MessageEnvelope implements Serializable, Cloneable {
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     // Set MAIL FROM and RCPT TO.
     private String mail = null;
@@ -28,6 +33,12 @@ public class MessageEnvelope {
     private final Map<String, String> headers = new HashMap<>();
     private boolean prependHeaders = false;
 
+    // Blackholed status - true if email should be accepted but not saved.
+    private boolean blackholed = false;
+
+    // Bot addresses - recipients that matched bot patterns with their bot names
+    private final Map<String, List<String>> botAddresses = new HashMap<>();
+
     // Set MimeConfig.
     private MimeConfig mime = null;
 
@@ -36,7 +47,9 @@ public class MessageEnvelope {
     private String folder = null;
 
     // Set EML stream or null.
-    private InputStream stream = null;
+    private transient InputStream stream = null;
+    // Used for serialisation.
+    private byte[] bytes = null;
 
     // If EML is null set subject and message.
     private String subject = null;
@@ -60,6 +73,9 @@ public class MessageEnvelope {
 
     // Assertions to be made against transaction.
     private AssertConfig assertConfig;
+
+    // Scan results from security scanners (Rspamd, ClamAV, etc.)
+    private List<Map<String, Object>> scanResults = Collections.synchronizedList(new ArrayList<>());
 
     /**
      * Constructs a new MessageEnvelope instance.
@@ -130,7 +146,7 @@ public class MessageEnvelope {
         if (StringUtils.isNotBlank(rcpt)) {
             return rcpt;
         } else if (!rcpts.isEmpty()) {
-            return rcpts.get(0);
+            return rcpts.getFirst();
         }
         return "";
     }
@@ -186,6 +202,17 @@ public class MessageEnvelope {
         }
 
         return rcpts;
+    }
+
+    /**
+     * Adds recipient address.
+     *
+     * @param rcpt Recipients address.
+     * @return Self.
+     */
+    public MessageEnvelope addRcpt(String rcpt) {
+        this.rcpts.add(rcpt);
+        return this;
     }
 
     /**
@@ -356,7 +383,7 @@ public class MessageEnvelope {
      * @return Eml stream.
      */
     public InputStream getStream() {
-        return stream;
+        return stream != null ? stream : (bytes != null ? new ByteArrayInputStream(bytes) : null);
     }
 
     /**
@@ -367,6 +394,17 @@ public class MessageEnvelope {
      */
     public MessageEnvelope setStream(InputStream stream) {
         this.stream = stream;
+        return this;
+    }
+
+    /**
+     * Sets eml byte array.
+     *
+     * @param bytes Eml byte array.
+     * @return Self.
+     */
+    public MessageEnvelope setBytes(byte[] bytes) {
+        this.bytes = bytes;
         return this;
     }
 
@@ -644,5 +682,154 @@ public class MessageEnvelope {
     public MessageEnvelope setAssertions(AssertConfig assertConfig) {
         this.assertConfig = assertConfig;
         return this;
+    }
+
+    /**
+     * Is envelope blackholed.
+     *
+     * @return Boolean.
+     */
+    public boolean isBlackholed() {
+        return blackholed;
+    }
+
+    /**
+     * Sets envelope blackholed status.
+     *
+     * @param blackholed Blackholed status.
+     * @return MessageEnvelope instance.
+     */
+    public MessageEnvelope setBlackholed(boolean blackholed) {
+        this.blackholed = blackholed;
+        return this;
+    }
+
+    /**
+     * Gets scan results from security scanners.
+     * <p>This list is thread-safe and contains scan results from various security scanners
+     * such as Rspamd (spam/phishing) and ClamAV (virus scanning).
+     *
+     * @return Unmodifiable view of the scan results list.
+     */
+    public List<Map<String, Object>> getScanResults() {
+        return Collections.unmodifiableList(scanResults);
+    }
+
+    /**
+     * Adds a scan result to the list.
+     * <p>This method is thread-safe.
+     *
+     * @param scanResult The scan result to add.
+     * @return MessageEnvelope instance.
+     */
+    public MessageEnvelope addScanResult(Map<String, Object> scanResult) {
+        if (scanResult != null && !scanResult.isEmpty()) {
+            this.scanResults.add(scanResult);
+        }
+        return this;
+    }
+
+    /**
+     * Adds a bot address with its associated bot name.
+     *
+     * @param address Email address that matched a bot pattern.
+     * @param botName Name of the bot to process this address.
+     * @return MessageEnvelope instance.
+     */
+    public MessageEnvelope addBotAddress(String address, String botName) {
+        if (address != null && !address.isEmpty() && botName != null && !botName.isEmpty()) {
+            botAddresses.computeIfAbsent(address, k -> new ArrayList<>()).add(botName);
+        }
+        return this;
+    }
+
+    /**
+     * Gets the map of bot addresses to bot names.
+     *
+     * @return Unmodifiable map of bot addresses.
+     */
+    public Map<String, List<String>> getBotAddresses() {
+        return Collections.unmodifiableMap(botAddresses);
+    }
+
+    /**
+     * Checks if the given address is a bot address.
+     *
+     * @param address Email address to check.
+     * @return true if address is a bot address.
+     */
+    public boolean isBotAddress(String address) {
+        return address != null && botAddresses.containsKey(address);
+    }
+
+    /**
+     * Checks if this envelope has any bot addresses.
+     *
+     * @return true if envelope has bot addresses.
+     */
+    public boolean hasBotAddresses() {
+        return !botAddresses.isEmpty();
+    }
+
+    /**
+     * Creates a copy of this MessageEnvelope.
+     * <p>Creates a new instance with all fields copied from this envelope.
+     * <p>Note: date and msgId from the original are preserved in the clone.
+     * <p>Collections and arrays are deep copied to ensure proper isolation.
+     *
+     * @return A cloned MessageEnvelope instance.
+     */
+    @Override
+    public MessageEnvelope clone() {
+        try {
+            MessageEnvelope cloned = (MessageEnvelope) super.clone();
+
+            // Deep copy mutable collections.
+            cloned.rcpts = new ArrayList<>(this.rcpts);
+
+            cloned.params.clear();
+            for (Map.Entry<String, List<String>> entry : this.params.entrySet()) {
+                cloned.params.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            }
+
+            cloned.headers.clear();
+            cloned.headers.putAll(this.headers);
+
+            // Deep copy botAddresses
+            cloned.botAddresses.clear();
+            for (Map.Entry<String, List<String>> entry : this.botAddresses.entrySet()) {
+                cloned.botAddresses.put(entry.getKey(), new ArrayList<>(entry.getValue()));
+            }
+
+            // Deep copy scanResults
+            cloned.scanResults = Collections.synchronizedList(new ArrayList<>());
+            synchronized (this.scanResults) {
+                for (Map<String, Object> scanResult : this.scanResults) {
+                    Map<String, Object> clonedResult = new HashMap<>();
+                    for (Map.Entry<String, Object> entry : scanResult.entrySet()) {
+                        Object value = entry.getValue();
+                        if (value instanceof Map) {
+                            // Shallow copy of nested map
+                            clonedResult.put(entry.getKey(), new HashMap<>((Map<?, ?>) value));
+                        } else if (value instanceof Collection) {
+                            // Shallow copy of nested collection
+                            clonedResult.put(entry.getKey(), new ArrayList<>((Collection<?>) value));
+                        } else {
+                            clonedResult.put(entry.getKey(), value);
+                        }
+                    }
+                    cloned.scanResults.add(clonedResult);
+                }
+            }
+
+            // Deep copy byte array if present.
+            if (this.bytes != null) {
+                cloned.bytes = Arrays.copyOf(this.bytes, this.bytes.length);
+            }
+
+            return cloned;
+        } catch (CloneNotSupportedException e) {
+            throw new AssertionError("Clone should be supported", e);
+        }
     }
 }

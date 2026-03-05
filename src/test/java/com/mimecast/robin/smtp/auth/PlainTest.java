@@ -14,18 +14,18 @@ class PlainTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     @Test
     void getResponse() {
         Session session = new Session();
         session.setUsername("tony@example.com");
-        session.setUsername("giveHerTheRing");
+        session.setPassword("stark");
 
         Plain plain = new Plain(new Connection(session));
         Plain plainNoSession = new Plain(new Connection(new Session()));
-        assertEquals("Z2l2ZUhlclRoZVJpbmcAZ2l2ZUhlclRoZVJpbmcA", plain.getLogin());
+        assertEquals("dG9ueUBleGFtcGxlLmNvbQB0b255QGV4YW1wbGUuY29tAHN0YXJr", plain.getLogin());
         assertEquals("AAA=", plainNoSession.getLogin());
     }
 }

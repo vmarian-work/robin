@@ -3,16 +3,23 @@ package com.mimecast.robin.smtp.session;
 import com.mimecast.robin.config.ConfigMapper;
 import com.mimecast.robin.config.assertion.AssertConfig;
 import com.mimecast.robin.config.client.CaseConfig;
+import com.mimecast.robin.config.server.ProxyRule;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.smtp.MessageEnvelope;
+import com.mimecast.robin.smtp.ProxyEmailDelivery;
 import com.mimecast.robin.smtp.connection.SmtpFoundation;
+import com.mimecast.robin.smtp.security.SecurityPolicy;
 import com.mimecast.robin.smtp.transaction.SessionTransactionList;
 import com.mimecast.robin.util.Magic;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.apache.logging.log4j.ThreadContext;
 
-import javax.mail.internet.InternetAddress;
+import java.io.IOException;
+import java.io.Serial;
+import java.io.Serializable;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.text.SimpleDateFormat;
 import java.util.*;
 
@@ -22,13 +29,22 @@ import java.util.*;
  * <p>This is the primary container for session data.
  */
 @SuppressWarnings({"UnusedReturnValue", "rawtypes"})
-public class Session {
+public class Session implements Serializable, Cloneable {
     private static final Logger log = LogManager.getLogger(Session.class);
+
+    @Serial
+    private static final long serialVersionUID = 1L;
+
+    /**
+     * Session direction.
+     * <p>Default: INBOUND.
+     */
+    private EmailDirection direction = EmailDirection.INBOUND;
 
     /**
      * UID.
      */
-    private final String uid = UUID.randomUUID().toString();
+    private String uid = UUID.randomUUID().toString();
 
     /**
      * Current RFC 2822 compliant date.
@@ -83,7 +99,7 @@ public class Session {
     /**
      * [Client] Destination port.
      */
-    private int port;
+    private int port = 25;
 
     /**
      * Own rDNS.
@@ -106,6 +122,31 @@ public class Session {
     private String friendAddr;
 
     /**
+     * Remote IP RBL presence.
+     */
+    private boolean friendInRbl;
+
+    /**
+     * Remote IP found in RBL list.
+     */
+    private String friendRbl;
+
+    /**
+     * Session is blackholed (accept but don't save).
+     */
+    private boolean blackholed;
+
+    /**
+     * [Client] HELO domain.
+     */
+    private String helo = "";
+
+    /**
+     * [Client] LHLO domain.
+     */
+    private String lhlo = "";
+
+    /**
      * [Client] EHLO domain.
      */
     private String ehlo = "";
@@ -116,7 +157,7 @@ public class Session {
     private long ehloSize = -1;
 
     /**
-     * [Client] EHLO advertised STARTLS.
+     * [Client] EHLO advertised STARTTLS.
      */
     private boolean ehloTls = false;
 
@@ -151,17 +192,29 @@ public class Session {
     private List<String> ehloAuth = new ArrayList<>();
 
     /**
-     * TLS handshake successful.
+     * Is TLS enabled.
      */
     private boolean tls = false;
 
     /**
-     * Do TLS.
+     * TLS result.
      */
     private boolean startTls = false;
 
     /**
-     * Do auth before TLS.
+     * Security policy for this connection (DANE/MTA-STS/Opportunistic).
+     * <p>Determined during MX resolution and enforced during TLS negotiation.
+     */
+    private SecurityPolicy securityPolicy;
+
+    /**
+     * [Server] Is secure port.
+     * <p>This supports submission unlike main port.
+     */
+    private boolean securePort = false;
+
+    /**
+     * [Client] Do auth before TLS.
      */
     private boolean authBeforeTls = false;
 
@@ -191,29 +244,27 @@ public class Session {
     private String password = "";
 
     /**
-     * List of envelopes.
+     * List of verbs to call in order.
      */
-    private final List<String> behaviour = new ArrayList<>();
-
-    /**
-     * MAIL FROM envelope address.
-     */
-    private InternetAddress mail;
-
-    /**
-     * RCPT TO envelope addresses.
-     */
-    private final List<InternetAddress> rcpts = new ArrayList<>();
+    private List<String> behaviour = new ArrayList<>();
 
     /**
      * List of envelopes.
      */
-    private final List<MessageEnvelope> envelopes = new ArrayList<>();
+    private List<MessageEnvelope> envelopes = new ArrayList<>();
+
+    /**
+     * Map of proxy connections by rule.
+     * <p>Stores proxy connections for reuse across multiple envelopes.
+     * <p>Key: ProxyRule, Value: ProxyEmailDelivery
+     * <p>This is transient and not serialized.
+     */
+    private final transient Map<ProxyRule, ProxyEmailDelivery> proxyConnections = new HashMap<>();
 
     /**
      * SessionTransactionList instance.
      */
-    private final SessionTransactionList sessionTransactionList = new SessionTransactionList();
+    private SessionTransactionList sessionTransactionList = new SessionTransactionList();
 
     /**
      * AssertConfig.
@@ -222,14 +273,14 @@ public class Session {
 
     /**
      * List of magic variables.
-     * <p>Handy palce to store external data for reuse.
+     * <p>Handy place to store external data for reuse.
      */
     private final Map<String, Object> magic = new HashMap<>();
 
     /**
      * Saved results.
      */
-    private final Map<String, List> savedResults = new HashMap<>();
+    private final Map<String, List<?>> savedResults = new HashMap<>();
 
     /**
      * Constructs a new Session instance.
@@ -248,6 +299,54 @@ public class Session {
      */
     public void map(CaseConfig caseConfig) {
         new ConfigMapper(caseConfig).mapTo(this);
+    }
+
+    /**
+     * Sets direction.
+     *
+     * @param direction Enum.
+     * @return Self.
+     */
+    public Session setDirection(EmailDirection direction) {
+        this.direction = direction;
+        return this;
+    }
+
+    /**
+     * Gets direction.
+     *
+     * @return Enum.
+     */
+    public EmailDirection getDirection() {
+        return direction;
+    }
+
+    /**
+     * Gets inbound direction.
+     *
+     * @return Boolean.
+     */
+    public boolean isInbound() {
+        return direction == EmailDirection.INBOUND;
+    }
+
+    /**
+     * Gets outbound direction.
+     *
+     * @return Boolean.
+     */
+    public boolean isOutbound() {
+        return direction == EmailDirection.OUTBOUND;
+    }
+
+    /**
+     * Sets UID.
+     *
+     * @return Self.
+     */
+    public Session setUID(String uid) {
+        this.uid = uid;
+        return this;
     }
 
     /**
@@ -565,6 +664,106 @@ public class Session {
     }
 
     /**
+     * Is remote IP present in RBL.
+     *
+     * @return Boolean.
+     */
+    public boolean isFriendInRbl() {
+        return friendInRbl;
+    }
+
+    /**
+     * Sets remote IP RBL presence.
+     *
+     * @param friendInRbl Remote IP RBL presence.
+     * @return Self.
+     */
+    public Session setFriendInRbl(boolean friendInRbl) {
+        this.friendInRbl = friendInRbl;
+        return this;
+    }
+
+    /**
+     * Gets remote IP found in RBL list.
+     *
+     * @return RBL name.
+     */
+    public String getFriendRbl() {
+        return friendRbl;
+    }
+
+    /**
+     * Sets remote IP found in RBL list.
+     *
+     * @param friendRbl RBL name.
+     * @return Self.
+     */
+    public Session setFriendRbl(String friendRbl) {
+        this.friendRbl = friendRbl;
+        return this;
+    }
+
+    /**
+     * Is session blackholed.
+     *
+     * @return Boolean.
+     */
+    public boolean isBlackholed() {
+        return blackholed;
+    }
+
+    /**
+     * Sets session blackholed status.
+     *
+     * @param blackholed Blackholed status.
+     * @return Self.
+     */
+    public Session setBlackholed(boolean blackholed) {
+        this.blackholed = blackholed;
+        return this;
+    }
+
+    /**
+     * Gets HELO domain.
+     *
+     * @return Domain.
+     */
+    public String getHelo() {
+        return helo;
+    }
+
+    /**
+     * Sets HELO domain.
+     *
+     * @param helo HELO domain.
+     * @return Self.
+     */
+    public Session setHelo(String helo) {
+        this.helo = helo;
+        return this;
+    }
+
+    /**
+     * Gets LHLO domain.
+     *
+     * @return Domain.
+     */
+    public String getLhlo() {
+        return lhlo;
+    }
+
+    /**
+     * Sets LHLO domain.
+     *
+     * @param lhlo LHLO domain.
+     * @return Self.
+     */
+    public Session setLhlo(String lhlo) {
+        this.lhlo = lhlo;
+        return this;
+    }
+
+    /**
      * Gets EHLO domain.
      *
      * @return Domain.
@@ -745,7 +944,7 @@ public class Session {
     }
 
     /**
-     * Gets TLS handshake success.
+     * Gets TLS enablement.
      *
      * @return TLS enabled.
      */
@@ -754,9 +953,9 @@ public class Session {
     }
 
     /**
-     * Sets TLS handshake success if any.
+     * Sets TLS enablement.
      *
-     * @param tls Handshake success.
+     * @param tls Enablement.
      * @return Self.
      */
     public Session setTls(boolean tls) {
@@ -765,22 +964,65 @@ public class Session {
     }
 
     /**
-     * Gets TLS enablement.
+     * Gets TLS result.
      *
-     * @return TLS enablement.
+     * @return TLS result.
      */
     public boolean isStartTls() {
         return startTls;
     }
 
     /**
-     * Sets TLS enablement.
+     * Sets TLS result.
      *
-     * @param startTls TLS enablement.
+     * @param startTls TLS result.
      * @return Self.
      */
     public Session setStartTls(boolean startTls) {
         this.startTls = startTls;
+        return this;
+    }
+
+    /**
+     * Gets the security policy for this connection.
+     * <p>The security policy (DANE/MTA-STS/Opportunistic) determines TLS requirements
+     * <br>and certificate validation rules per RFC 7672 and RFC 8461.
+     *
+     * @return SecurityPolicy, or null if not set.
+     */
+    public SecurityPolicy getSecurityPolicy() {
+        return securityPolicy;
+    }
+
+    /**
+     * Sets the security policy for this connection.
+     * <p>Should be set during MX resolution based on DANE TLSA records or MTA-STS policy.
+     *
+     * @param securityPolicy SecurityPolicy to enforce.
+     * @return Self.
+     */
+    public Session setSecurityPolicy(SecurityPolicy securityPolicy) {
+        this.securityPolicy = securityPolicy;
+        return this;
+    }
+
+    /**
+     * Gets secure port enablement.
+     *
+     * @return Secure port enablement.
+     */
+    public boolean isSecurePort() {
+        return securePort;
+    }
+
+    /**
+     * Sets secure port enablement.
+     *
+     * @param securePort Secure port enablement.
+     * @return Self.
+     */
+    public Session setSecurePort(boolean securePort) {
+        this.securePort = securePort;
         return this;
     }
 
@@ -925,46 +1167,6 @@ public class Session {
     }
 
     /**
-     * Gets MAIL FROM address.
-     *
-     * @return MAIL FROM address.
-     */
-    public InternetAddress getMail() {
-        return mail;
-    }
-
-    /**
-     * Sets MAIL FROM address.
-     *
-     * @param mail MAIL FROM address.
-     * @return Self.
-     */
-    public Session setMail(InternetAddress mail) {
-        this.mail = mail;
-        return this;
-    }
-
-    /**
-     * Gets RCPT TO address.
-     *
-     * @return RCPT TO address.
-     */
-    public List<InternetAddress> getRcpts() {
-        return rcpts;
-    }
-
-    /**
-     * Adds RCPT TO address.
-     *
-     * @param rcpt RCPT TO address.
-     * @return Self.
-     */
-    public Session addRcpt(InternetAddress rcpt) {
-        this.rcpts.add(rcpt);
-        return this;
-    }
-
-    /**
      * Gets list of envelopes.
      *
      * @return MessageEnvelope list.
@@ -982,6 +1184,58 @@ public class Session {
     public Session addEnvelope(MessageEnvelope envelope) {
         envelopes.add(envelope);
         return this;
+    }
+
+    /**
+     * Clears envelope list.
+     *
+     * @return Self.
+     */
+    public Session clearEnvelopes() {
+        envelopes.clear();
+        return this;
+    }
+
+    /**
+     * Gets proxy connection for a given rule.
+     * <p>Returns null if no connection exists for this rule.
+     *
+     * @param rule ProxyRule instance.
+     * @return ProxyEmailDelivery instance or null.
+     */
+    public ProxyEmailDelivery getProxyConnection(ProxyRule rule) {
+        return proxyConnections.get(rule);
+    }
+
+    /**
+     * Sets proxy connection for a given rule.
+     * <p>Stores the connection for reuse across multiple envelopes.
+     *
+     * @param rule     ProxyRule instance.
+     * @param delivery ProxyEmailDelivery instance.
+     * @return Self.
+     */
+    public Session setProxyConnection(ProxyRule rule, ProxyEmailDelivery delivery) {
+        proxyConnections.put(rule, delivery);
+        return this;
+    }
+
+    /**
+     * Gets all proxy connections.
+     *
+     * @return Map of ProxyRule to ProxyEmailDelivery.
+     */
+    public Map<ProxyRule, ProxyEmailDelivery> getProxyConnections() {
+        return proxyConnections;
+    }
+
+    /**
+     * Closes and clears all proxy connections.
+     * <p>Should be called when the session ends.
+     */
+    public void closeProxyConnections() {
+        proxyConnections.values().forEach(ProxyEmailDelivery::close);
+        proxyConnections.clear();
     }
 
     /**
@@ -1016,7 +1270,7 @@ public class Session {
     /**
      * Has magic key.
      *
-     * @param key   Magic key.
+     * @param key Magic key.
      * @return Self.
      */
     public boolean hasMagic(String key) {
@@ -1069,7 +1323,77 @@ public class Session {
      *
      * @return Map of String, List.
      */
-    public Map<String, List> getSavedResults() {
+    public Map<String, List<?>> getSavedResults() {
         return savedResults;
+    }
+
+    /**
+     * Creates a copy of this Session.
+     * <p>Uses Object.clone() for a field-by-field copy, then deep-copies
+     * mutable arrays and non-final collections that would otherwise be shared.
+     * Final collections and objects without a clone implementation are left as-is.
+     *
+     * @return A cloned Session instance.
+     */
+    @Override
+    public Session clone() {
+        try {
+            Session clone = (Session) super.clone();
+
+            // Assign new UID.
+            clone.setUID(UUID.randomUUID().toString());
+
+            // Deep copy arrays.
+            if (this.protocols != null) {
+                clone.protocols = this.protocols.clone();
+            }
+            if (this.ciphers != null) {
+                clone.ciphers = this.ciphers.clone();
+            }
+
+            // Copy non-final lists to new instances to avoid sharing.
+            if (this.mx != null) {
+                clone.mx = new ArrayList<>(this.mx);
+            }
+            if (this.ehloAuth != null) {
+                clone.ehloAuth = new ArrayList<>(this.ehloAuth);
+            }
+            if (this.behaviour != null) {
+                clone.behaviour = new ArrayList<>(this.behaviour);
+            }
+
+            // Deep clone envelopes and sessionTransactionList.
+            if (this.envelopes != null) {
+                clone.envelopes = new ArrayList<>();
+                this.envelopes.forEach(env -> clone.envelopes.add(env != null ? env.clone() : null));
+            }
+            if (this.sessionTransactionList != null) {
+                clone.sessionTransactionList = sessionTransactionList.clone();
+            }
+
+            // Note: magic and savedResults are final and thus remain shared references after a shallow clone.
+            // This is acceptable as they are intended for cross-component data sharing.
+            // They will however be copied when dequeued from the persistent cache which always creates new instances.
+
+            return clone;
+        } catch (CloneNotSupportedException e) {
+            throw new AssertionError("Clone should be supported", e);
+        }
+    }
+
+    /**
+     * Cleans up temporary files created for message envelopes.
+     */
+    public void close() {
+        for (MessageEnvelope envelope : envelopes) {
+            try {
+                if (envelope.getFile() != null) {
+                    Files.deleteIfExists(Path.of(envelope.getFile()));
+                }
+                log.debug("Deleted temporary file: {}", envelope.getFile());
+            } catch (IOException e) {
+                log.error("Error deleting temporary file: {}", envelope.getFile());
+            }
+        }
     }
 }

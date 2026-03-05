@@ -1,5 +1,5 @@
 {
-  $schema: "/schema/case.schema.json",
+  $schema: "../../../../main/resources/schema/case.schema.json",
 
   // How many times to try and establish a connection to remote server. First counts.
   retry: 2,
@@ -31,16 +31,15 @@
         // Protocol assertions.
         // Check SMTP responses match regular expressions.
         protocol: [
-          ["MAIL", "250 Sender OK"],
-          ["RCPT", "250 Recipient OK"],
-          ["DATA", "^250"],
-          ["DATA", "Received OK"]
+          ["MAIL", "^250.*Sender OK"],
+          ["RCPT", "^250.*Recipient OK"],
+          ["DATA", "^250.*Received OK"]
         ],
 
         // External assertions.
         external: [
           {
-            // Assertion type logs for pulling logs from FFS.
+            // Assertion type logs for pulling logs.
             type: "logs",
 
             // How long to wait before asserting.
@@ -87,7 +86,7 @@
   // Assertions to run against the connection.
   assertions: {
     // Disable pre assertion checks from failing the test, exit gracefully.
-    protocolFails: false, // If SMTP asertion fails skip.
+    protocolFails: false, // If SMTP assertion fails skip.
     verifyFails: false,
 
     // Protocol assertions.
@@ -95,7 +94,7 @@
     protocol: [
       [ "SMTP", "^220" ],
       [ "EHLO", "STARTTLS" ],
-      [ "SHLO", "250 HELP" ],
+      [ "SHLO", "^250-Welcome" ],
       [ "QUIT" ]
     ]
   }

@@ -9,6 +9,8 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.io.IOException;
+import java.io.Serial;
+import java.io.Serializable;
 import java.nio.charset.Charset;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -26,8 +28,10 @@ import java.util.Map;
  * @see ClientConfig
  */
 @SuppressWarnings({"unchecked", "rawtypes"})
-public abstract class ConfigFoundation {
+public abstract class ConfigFoundation implements Serializable {
     protected static final Logger log = LogManager.getLogger(ConfigFoundation.class);
+    @Serial
+    private static final long serialVersionUID = 1L;
 
     /**
      * Properties container.
@@ -160,6 +164,17 @@ public abstract class ConfigFoundation {
      */
     public Long getLongProperty(String name, Long def) {
         return hasProperty(name) ? getLongProperty(name) : def;
+    }
+
+    /**
+     * Gets Double property.
+     *
+     * @param name Property name.
+     * @param def  Default value.
+     * @return Double.
+     */
+    public Double getDoubleProperty(String name, Double def) {
+        return map.get(name) != null ? (Double) map.get(name) : def;
     }
 
     /**

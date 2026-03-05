@@ -1,6 +1,8 @@
 package com.mimecast.robin;
 
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.parallel.Execution;
+import org.junit.jupiter.api.parallel.ExecutionMode;
 
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -9,6 +11,12 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
+/**
+ * Tests for Main class.
+ * <p>These tests must run serially because Main() constructor has side effects
+ * and tests share system output capture through MainMock.
+ */
+@Execution(ExecutionMode.SAME_THREAD)
 class MainTest {
 
     @Test
@@ -18,9 +26,12 @@ class MainTest {
         assertEquals(Main.USAGE, logs.get(0));
         assertEquals(" " + Main.DESCRIPTION, logs.get(1));
         assertEquals("", logs.get(2));
-        assertEquals("usage:   [--client] [--server]\n" +
-                "    --client   Run as client\n" +
-                "    --server   Run as server\n", logs.get(3));
+        assertEquals(" usage:    [--client] [--dane] [--mtasts] [--server]\n\n" +
+                " Options           Description     \n" +
+                " --client     Run as client        \n" +
+                " --server     Run as server        \n" +
+                " --mtasts     Run as MTA-STS client\n" +
+                " --dane       Run as DANE client   \n\n", logs.get(3).replaceAll("\r", ""));
         assertEquals("", logs.get(4));
     }
 
@@ -31,9 +42,12 @@ class MainTest {
         assertEquals(Main.USAGE, logs.get(0));
         assertEquals(" " + Main.DESCRIPTION, logs.get(1));
         assertEquals("", logs.get(2));
-        assertEquals("usage:   [--client] [--server]\n" +
-                "    --client   Run as client\n" +
-                "    --server   Run as server\n", logs.get(3));
+        assertEquals(" usage:    [--client] [--dane] [--mtasts] [--server]\n\n" +
+                " Options           Description     \n" +
+                " --client     Run as client        \n" +
+                " --server     Run as server        \n" +
+                " --mtasts     Run as MTA-STS client\n" +
+                " --dane       Run as DANE client   \n\n", logs.get(3).replaceAll("\r", ""));
         assertEquals("", logs.get(4));
     }
 
@@ -64,22 +78,22 @@ class MainTest {
         assertEquals("Config error: Config directory not found", logs.get(0));
         assertEquals(7, logs.size());
 
-        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/lipsum.eml"));
+        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/mime/lipsum.eml"));
 
         assertEquals("Config error: MX required in file mode", logs.get(0));
         assertEquals(7, logs.size());
 
-        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/lipsum.eml", "-x", "example.com"));
+        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/mime/lipsum.eml", "-x", "example.com"));
 
         assertEquals("Config error: MAIL required in file mode", logs.get(0));
         assertEquals(7, logs.size());
 
-        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/lipsum.eml", "-x", "example.com", "-m", "john@example.com"));
+        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/mime/lipsum.eml", "-x", "example.com", "-m", "john@example.com"));
 
         assertEquals("Config error: RCPT required in file mode", logs.get(0));
         assertEquals(7, logs.size());
 
-        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/lipsum.eml", "-x", "example.com", "-m", "john@example.com", "-r", "jane@example.com"));
+        logs = MainMock.main(Arrays.asList("--client", "-f", "src/test/resources/mime/lipsum.eml", "-x", "example.com", "-m", "john@example.com", "-r", "jane@example.com"));
 
         assertEquals("Config error: Config directory not found", logs.get(0));
         assertEquals(7, logs.size());
@@ -90,7 +104,7 @@ class MainTest {
         List<String> logs = MainMock.main(Collections.singletonList("--server"));
 
         assertEquals("java -jar robin.jar --server", logs.get(0));
-        assertEquals(" Debug MTA server", logs.get(1));
+        assertEquals(" MTA server", logs.get(1));
         assertEquals("", logs.get(2));
         assertEquals("usage:", logs.get(3));
         assertEquals(" Path to configuration directory", logs.get(4));

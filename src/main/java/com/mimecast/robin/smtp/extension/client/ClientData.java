@@ -1,5 +1,7 @@
 package com.mimecast.robin.smtp.extension.client;
 
+import com.mimecast.robin.config.client.LoggingConfig;
+import com.mimecast.robin.main.Config;
 import com.mimecast.robin.mime.EmailBuilder;
 import com.mimecast.robin.smtp.MessageEnvelope;
 import com.mimecast.robin.smtp.connection.Connection;
@@ -90,6 +92,8 @@ public class ClientData extends ClientProcessor {
             try (Closeable ignored = () -> Files.delete(path)) {
                 Magic.putTransactionMagic(messageID, connection.getSession()); // Put magic early for EmailBuilder use.
                 new EmailBuilder(connection.getSession(), envelope)
+                        .setLogTextPartsBody((new LoggingConfig(Config.getProperties().getMapProperty("logging"))
+                                .getBooleanProperty("textPartBody", false)))
                         .buildMime()
                         .writeTo(new FileOutputStream(path.toFile()));
 
@@ -182,6 +186,27 @@ public class ClientData extends ClientProcessor {
         }
 
         read = connection.read("250");
+
+        // In LMTP with multiple recipients, we receive one response line per recipient.
+        // Standard SMTP/ESMTP returns a single response for all recipients.
+        // Check if we're using LMTP (LHLO instead of EHLO) and have multiple recipients.
+        boolean isLmtp = connection.getSession().getLhlo() != null && !connection.getSession().getLhlo().isEmpty();
+        int recipientCount = envelope.getRcpts().size();
+
+        if (isLmtp && recipientCount > 1 && read.startsWith("250")) {
+            // Read additional responses for remaining recipients.
+            StringBuilder allResponses = new StringBuilder(read);
+            for (int i = 1; i < recipientCount; i++) {
+                String additionalResponse = connection.read("250");
+                allResponses.append(additionalResponse);
+                if (!additionalResponse.startsWith("250")) {
+                    // If any recipient failed, record failure.
+                    envelopeTransactions.addTransaction(write, write, allResponses.toString(), true);
+                    return false;
+                }
+            }
+            read = allResponses.toString();
+        }
 
         envelopeTransactions.addTransaction(write, write, read, !read.startsWith("250"));
         return read.startsWith("250");

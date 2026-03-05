@@ -1,10 +1,13 @@
 package com.mimecast.robin.storage;
 
+import com.mimecast.robin.bots.BotProcessor;
+import com.mimecast.robin.config.server.ServerConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Factories;
+import com.mimecast.robin.main.Server;
 import com.mimecast.robin.mime.EmailParser;
 import com.mimecast.robin.mime.headers.MimeHeader;
-import com.mimecast.robin.smtp.EmailDelivery;
+import com.mimecast.robin.queue.relay.RelayMessage;
 import com.mimecast.robin.smtp.MessageEnvelope;
 import com.mimecast.robin.smtp.connection.Connection;
 import com.mimecast.robin.smtp.session.Session;
@@ -14,16 +17,17 @@ import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
-import javax.mail.internet.InternetAddress;
 import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
-import java.util.Collections;
 import java.util.Date;
+import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.stream.Collectors;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutorService;
 
 /**
  * Local storage client implementation.
@@ -36,7 +40,7 @@ public class LocalStorageClient implements StorageClient {
     /**
      * Enablement.
      */
-    protected final boolean enabled = Config.getServer().getStorage().getBooleanProperty("enabled");
+    protected ServerConfig config = Config.getServer();
 
     /**
      * Date.
@@ -95,19 +99,7 @@ public class LocalStorageClient implements StorageClient {
     @Override
     public LocalStorageClient setConnection(Connection connection) {
         this.connection = connection;
-        path = Config.getServer().getStorage().getStringProperty("path", "/tmp/store");
-
-        // Append first recipient domain/address to path
-        if (connection != null && !connection.getSession().getRcpts().isEmpty()) {
-            String[] splits = connection.getSession().getRcpts().get(0).getAddress().split("@");
-            if (splits.length == 2) {
-                path = Paths.get(
-                        path,
-                        PathUtils.normalize(splits[1]),
-                        PathUtils.normalize(splits[0])
-                ).toString();
-            }
-        }
+        path = Paths.get(config.getStorage().getStringProperty("path", "/tmp/store"), "tmp").toString();
 
         return this;
     }
@@ -119,9 +111,9 @@ public class LocalStorageClient implements StorageClient {
      */
     @Override
     public OutputStream getStream() throws FileNotFoundException {
-        if (enabled) {
-            if (PathUtils.makePath(path)) {
-                stream = new FileOutputStream(Paths.get(path, fileName).toString());
+        if (config.getStorage().getBooleanProperty("enabled")) {
+            if (PathUtils.makePath(getPath())) {
+                stream = new FileOutputStream(getFile());
             } else {
                 log.error("Storage path could not be created");
             }
@@ -133,45 +125,95 @@ public class LocalStorageClient implements StorageClient {
     }
 
     /**
-     * Gets file token.
+     * Gets path.
      *
      * @return String.
      */
     @Override
-    public String getToken() {
-        return Paths.get(path, fileName).toString();
+    public String getPath() {
+        return path;
+    }
+
+    /**
+     * Gets file path.
+     *
+     * @return String.
+     */
+    @Override
+    public String getFile() {
+        return Paths.get(getPath(), fileName).toString();
     }
 
     /**
      * Saves file.
+     *
+     * @return Boolean.
      */
     @Override
-    public void save() {
-        // TODO Store token in connection session envelope.
-        if (enabled) {
-            try {
-                parser = new EmailParser(getToken()).parse(true);
-                rename();
-                relay();
-
-            } catch (IOException e) {
-                log.error("Storage unable to parse email: {}", e.getMessage());
-            }
-
-            try {
+    public boolean save() {
+        try {
+            if (config.getStorage().getBooleanProperty("enabled")) {
                 stream.flush();
                 stream.close();
-                log.info("Storage file saved to: {}", getToken());
 
-            } catch (IOException e) {
-                log.error("Storage file not flushed/closed: {}", e.getMessage());
+                // Parse email for further processing.
+                try (EmailParser emailParser = new EmailParser(getFile()).parse()) {
+                    parser = emailParser;
+
+                    // Rename file if X-Robin-Filename header exists and feature enabled.
+                    if (!config.getStorage().getBooleanProperty("disableRenameHeader")) {
+                        rename();
+                    }
+
+                    // Set email path to current envelope if any.
+                    if (!connection.getSession().getEnvelopes().isEmpty()) {
+                        MessageEnvelope envelope = connection.getSession().getEnvelopes().getLast();
+                        envelope.setFile(getFile());
+
+                        // Extract key headers for bot processing before parser is closed.
+                        // Bots run asynchronously and cannot safely access the parser after it's closed.
+                        Optional<MimeHeader> replyTo = parser.getHeaders().get("Reply-To");
+                        replyTo.ifPresent(header -> envelope.addHeader("X-Parsed-Reply-To", header.getValue()));
+
+                        Optional<MimeHeader> from = parser.getHeaders().get("From");
+                        from.ifPresent(header -> envelope.addHeader("X-Parsed-From", header.getValue()));
+                    }
+                    log.info("Storage file saved to: {}", getFile());
+
+                    // Run storage processors.
+                    for (Callable<StorageProcessor> storageProcessor : Factories.getStorageProcessors()) {
+                        try {
+                            StorageProcessor processor = storageProcessor.call();
+
+                            if (!processor.process(connection, parser)) {
+                                return false;
+                            }
+                        } catch (Exception e) {
+                            log.error("Storage processor error: {}", e.getMessage());
+                            return false;
+                        }
+                    }
+
+                    // Process bot addresses if any.
+                    // Note: Parser is passed as null to prevent async bots from accessing
+                    // a closed resource. Bots should use envelope headers instead.
+                    processBotAddresses(connection, null);
+
+                    // Relay email if X-Robin-Relay or relay configuration or direction outbound enabled.
+                    relay();
+                }
             }
+        } catch (IOException e) {
+            log.error("Storage unable to store the email: {}", e.getMessage());
+            return false;
         }
+
+        return true;
     }
 
     /**
      * Rename filename.
-     * <p>Will parse and lookup if a X-Robin-Filename header exists and use it's value as a filename.
+     * <p>Will parse and lookup if an X-Robin-Filename header exists and use its value as a filename.
      *
      * @throws IOException Unable to delete file.
      */
@@ -180,8 +222,8 @@ public class LocalStorageClient implements StorageClient {
         if (optional.isPresent()) {
             MimeHeader header = optional.get();
 
-            String source = getToken();
-            Path target = Paths.get(path, header.getValue());
+            String source = getFile();
+            Path target = Paths.get(getPath(), header.getValue());
 
             if (StringUtils.isNotBlank(header.getValue())) {
                 if (Files.deleteIfExists(target)) {
@@ -190,47 +232,79 @@ public class LocalStorageClient implements StorageClient {
 
                 if (new File(source).renameTo(new File(target.toString()))) {
                     fileName = header.getValue();
-                    log.info("Storage moved file to: {}", getToken());
+                    log.info("Storage moved file to: {}", getFile());
+                }
+            }
+        }
+    }
+
+
+    /**
+     * Processes bot addresses by submitting them to the bot thread pool.
+     * <p>Each bot address is processed in a separate thread to avoid blocking.
+     *
+     * @param connection  Connection instance.
+     * @param emailParser Parsed email instance.
+     */
+    private void processBotAddresses(Connection connection, EmailParser emailParser) {
+        if (connection.getSession().getEnvelopes().isEmpty()) {
+            return;
+        }
+
+        MessageEnvelope envelope = connection.getSession().getEnvelopes().getLast();
+        if (!envelope.hasBotAddresses()) {
+            return;
+        }
+
+        // Get bot executor service
+        ExecutorService botExecutor = Server.getBotExecutor();
+        if (botExecutor == null) {
+            log.warn("Bot executor not initialized, skipping bot processing");
+            return;
+        }
+
+        // Process each bot address
+        Map<String, List<String>> botAddresses = envelope.getBotAddresses();
+        for (Map.Entry<String, List<String>> entry : botAddresses.entrySet()) {
+            String address = entry.getKey();
+            List<String> botNames = entry.getValue();
+
+            for (String botName : botNames) {
+                Optional<BotProcessor> botOpt = Factories.getBot(botName);
+                if (botOpt.isPresent()) {
+                    BotProcessor bot = botOpt.get();
+                    
+                    // Clone the session to avoid race conditions
+                    // The bot processing happens asynchronously and the original connection/session
+                    // may be cleaned up or modified by the time the bot processes it.
+                    // We create a new connection with the cloned session for thread safety.
+                    Session sessionClone = connection.getSession().clone();
+                    Connection connectionCopy = new Connection(sessionClone);
+                    
+                    // Submit bot processing to thread pool
+                    botExecutor.submit(() -> {
+                        try {
+                            bot.process(connectionCopy, emailParser, address);
+                        } catch (Exception e) {
+                            log.error("Error processing bot {} for address {}: {}",
+                                    botName, address, e.getMessage(), e);
+                        }
+                    });
+                    log.info("Submitted bot {} for processing address: {}", botName, address);
+                } else {
+                    log.warn("Bot {} not found in factory for address: {}", botName, address);
                 }
             }
         }
     }
 
     /**
-     * Relay email.
+     * Relay email to another server by header or config.
      * <p>Will relay email to provided server.
      */
     private void relay() {
-        Optional<MimeHeader> optional = parser.getHeaders().get("x-robin-relay");
-        if (optional.isPresent()) {
-            MimeHeader header = optional.get();
-            String mx;
-            int port = 25;
-            if (header.getValue().contains(":")) {
-                String[] splits = header.getValue().split(":");
-                mx = splits[0];
-                if (splits.length > 1) {
-                    port = Integer.parseInt(splits[1]);
-                }
-            } else {
-                mx = header.getValue();
-            }
-            log.info("Relay found for: {}:{}", mx, port);
-
-            MessageEnvelope envelope = new MessageEnvelope()
-                    .setMail(connection.getSession().getMail().getAddress())
-                    .setRcpts(connection.getSession().getRcpts()
-                            .stream()
-                            .map(InternetAddress::getAddress)
-                            .collect(Collectors.toList()))
-                    .setFile(getToken());
-
-            Session session = Factories.getSession()
-                    .setMx(Collections.singletonList(mx))
-                    .setPort(port)
-                    .addEnvelope(envelope);
-
-            new Thread(() -> new EmailDelivery(session).send()).start();
+        if (!connection.getSession().getEnvelopes().isEmpty()) {
+            new RelayMessage(connection, parser).relay();
         }
     }
 }

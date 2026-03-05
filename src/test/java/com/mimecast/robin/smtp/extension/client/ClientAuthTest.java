@@ -20,7 +20,7 @@ class ClientAuthTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     static class ClientAuthMock extends ClientAuth {
@@ -47,7 +47,7 @@ class ClientAuthTest {
         connection.getSession()
                 .setEhlo("example.com")
                 .setUsername("tony@example.com")
-                .setPassword("giveHerTheRing");
+                .setPassword("stark");
         connection.getSession().setEhloAuth(Arrays.asList("digest-md5", "login", "plain"));
         return connection;
     }
@@ -70,7 +70,7 @@ class ClientAuthTest {
     void processDigestMD5True() throws IOException {
         StringBuilder stringBuilder = new StringBuilder()
                 .append("334 cmVhbG09IiIsbm9uY2U9IkdySWZncEw5TGFCbUlZSzEyNnMwZGc9PSIscW9wPSJhdXRoIixjaGFyc2V0PSJ1dGYtOCIsYWxnb3JpdGhtPSJtZDUtc2VzcyI=\r\n")
-                .append("334 cnNwYXV0aD0wZmU0ZDQ1MzI3NThjMGI1YzYzMjlkOTBiYjEyY2E4OA==\r\n")
+                .append("334 cnNwYXV0aD1mOTdhNjllZjI0M2I0ZjY3MDY2ZTRhNmI3ZDMyYzg5NQ==\r\n")
                 .append("235 2.7.0 Authorized\r\n");
         ConnectionMock connection = getConnection(stringBuilder);
 
@@ -84,7 +84,7 @@ class ClientAuthTest {
         assertEquals("" +
                         "dXNlcm5hbWU9InRvbnlAZXhhbXBsZS5jb20iLHJlYWxtPSIiLHFvcD1hdXRoLG5jPTAwMDAwMDAxLG5v" +
                         "bmNlPSJHcklmZ3BMOUxhQm1JWUsxMjZzMGRnPT0iLGNub25jZT0id2hhdGV2ZXIiLGRpZ2VzdC11cmk9" +
-                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPTY0ZGU1YWVhZmZhNmU5ZTNkOTc1NDk1MDZhMTRlMzZj" +
+                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPWZkYmY5YTYxMzU2YmI2NDcwNWZjZWEyMWUyYmRhOGRj" +
                         "\r\n",
                 connection.getLine(2));
 
@@ -97,7 +97,7 @@ class ClientAuthTest {
     void processDigestMD5Subsequent() throws IOException {
         StringBuilder stringBuilder = new StringBuilder()
                 .append("334 cmVhbG09IiIsbm9uY2U9IkdySWZncEw5TGFCbUlZSzEyNnMwZGc9PSIscW9wPSJhdXRoIixjaGFyc2V0PSJ1dGYtOCIsYWxnb3JpdGhtPSJtZDUtc2VzcyI=\r\n")
-                .append("334 cnNwYXV0aD0wZmU0ZDQ1MzI3NThjMGI1YzYzMjlkOTBiYjEyY2E4OA==\r\n")
+                .append("334 cnNwYXV0aD1mOTdhNjllZjI0M2I0ZjY3MDY2ZTRhNmI3ZDMyYzg5NQ==\r\n")
                 .append("235 2.7.0 Authorized\r\n");
         ConnectionMock connection = getConnection(stringBuilder);
 
@@ -120,7 +120,7 @@ class ClientAuthTest {
         assertEquals("AUTH DIGEST-MD5 " +
                         "dXNlcm5hbWU9InRvbnlAZXhhbXBsZS5jb20iLHJlYWxtPSIiLHFvcD1hdXRoLG5jPTAwMDAwMDAyLG5v" +
                         "bmNlPSJHcklmZ3BMOUxhQm1JWUsxMjZzMGRnPT0iLGNub25jZT0id2hhdGV2ZXIiLGRpZ2VzdC11cmk9" +
-                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPTY0ZGU1YWVhZmZhNmU5ZTNkOTc1NDk1MDZhMTRlMzZj" +
+                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPWZkYmY5YTYxMzU2YmI2NDcwNWZjZWEyMWUyYmRhOGRj" +
                         "\r\n",
                 connection.getLine(1));
 
@@ -132,7 +132,7 @@ class ClientAuthTest {
     @Test
     void processDigestMD5FalseChallenge() throws IOException {
         StringBuilder stringBuilder = new StringBuilder()
-                .append("504 5.7.4 Unrecognized authentication type\r\n");
+                .append("504 5.7.4 Unrecognized authentication mechanism\r\n");
         ConnectionMock connection = getConnection(stringBuilder);
 
         ClientAuth auth = new ClientAuthMock();
@@ -141,7 +141,7 @@ class ClientAuthTest {
         assertFalse(process);
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
-        assertEquals("504 5.7.4 Unrecognized authentication type", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
+        assertEquals("504 5.7.4 Unrecognized authentication mechanism", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
         assertTrue(connection.getSession().getSessionTransactionList().getLast("AUTH").isError());
     }
 
@@ -180,7 +180,7 @@ class ClientAuthTest {
         assertEquals("" +
                         "dXNlcm5hbWU9InRvbnlAZXhhbXBsZS5jb20iLHJlYWxtPSIiLHFvcD1hdXRoLG5jPTAwMDAwMDAxLG5v" +
                         "bmNlPSJHcklmZ3BMOUxhQm1JWUsxMjZzMGRnPT0iLGNub25jZT0id2hhdGV2ZXIiLGRpZ2VzdC11cmk9" +
-                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPTY0ZGU1YWVhZmZhNmU5ZTNkOTc1NDk1MDZhMTRlMzZj" +
+                        "InNtdHAvZXhhbXBsZS5jb20iLHJlc3BvbnNlPWZkYmY5YTYxMzU2YmI2NDcwNWZjZWEyMWUyYmRhOGRj" +
                         "\r\n",
                 connection.getLine(2));
 
@@ -202,7 +202,7 @@ class ClientAuthTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== Z2l2ZUhlclRoZVJpbmc=\r\n", connection.getLine(1));
+        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== c3Rhcms=\r\n", connection.getLine(1));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("235 2.7.0 Authorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
@@ -224,8 +224,8 @@ class ClientAuthTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== Z2l2ZUhlclRoZVJpbmc=\r\n", connection.getLine(1));
-        assertEquals("Z2l2ZUhlclRoZVJpbmc=\r\n", connection.getLine(2));
+        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== c3Rhcms=\r\n", connection.getLine(1));
+        assertEquals("c3Rhcms=\r\n", connection.getLine(2));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("235 2.7.0 Authorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
@@ -246,7 +246,7 @@ class ClientAuthTest {
         assertFalse(process);
 
         connection.parseLines();
-        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== Z2l2ZUhlclRoZVJpbmc=\r\n", connection.getLine(1));
+        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== c3Rhcms=\r\n", connection.getLine(1));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("535 5.7.1 Unauthorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
@@ -271,7 +271,7 @@ class ClientAuthTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== Z2l2ZUhlclRoZVJpbmc=\r\n", connection.getLine(1));
+        assertEquals("AUTH LOGIN dG9ueUBleGFtcGxlLmNvbQ== c3Rhcms=\r\n", connection.getLine(1));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("235 2.7.0 Authorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
@@ -291,7 +291,7 @@ class ClientAuthTest {
         assertTrue(process);
 
         connection.parseLines();
-        assertEquals("AUTH PLAIN dG9ueUBleGFtcGxlLmNvbQB0b255QGV4YW1wbGUuY29tAGdpdmVIZXJUaGVSaW5n\r\n", connection.getLine(1));
+        assertEquals("AUTH PLAIN dG9ueUBleGFtcGxlLmNvbQB0b255QGV4YW1wbGUuY29tAHN0YXJr\r\n", connection.getLine(1));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("235 2.7.0 Authorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());
@@ -311,7 +311,7 @@ class ClientAuthTest {
         assertFalse(process);
 
         connection.parseLines();
-        assertEquals("AUTH PLAIN dG9ueUBleGFtcGxlLmNvbQB0b255QGV4YW1wbGUuY29tAGdpdmVIZXJUaGVSaW5n\r\n", connection.getLine(1));
+        assertEquals("AUTH PLAIN dG9ueUBleGFtcGxlLmNvbQB0b255QGV4YW1wbGUuY29tAHN0YXJr\r\n", connection.getLine(1));
 
         assertEquals(1, connection.getSession().getSessionTransactionList().getTransactions().size());
         assertEquals("535 5.7.1 Unauthorized", connection.getSession().getSessionTransactionList().getLast("AUTH").getResponse());

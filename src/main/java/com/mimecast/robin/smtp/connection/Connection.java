@@ -6,14 +6,17 @@ import com.mimecast.robin.config.server.ServerConfig;
 import com.mimecast.robin.config.server.UserConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Factories;
+import com.mimecast.robin.mx.client.XBillDnsRecordClient;
 import com.mimecast.robin.smtp.EmailDelivery;
 import com.mimecast.robin.smtp.EmailReceipt;
 import com.mimecast.robin.smtp.io.LineInputStream;
+import com.mimecast.robin.smtp.security.SecurityPolicy;
 import com.mimecast.robin.smtp.session.Session;
 import com.mimecast.robin.util.Sleep;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.logging.log4j.ThreadContext;
 
 import javax.net.ssl.SSLSocket;
 import java.io.DataOutputStream;
@@ -80,11 +83,14 @@ public class Connection extends SmtpFoundation {
         session = Factories.getSession();
 
         // Connection info.
-        session.setAddr(socket.getLocalAddress().getHostName());
+        session.setAddr(socket.getLocalAddress().getHostAddress());
         session.setRdns(socket.getLocalAddress().getHostAddress());
 
         session.setFriendAddr(socket.getInetAddress().getHostAddress());
-        session.setFriendRdns(socket.getInetAddress().getHostName());
+        // Do PTR lookup via DNS client; fall back to address string.
+        session.setFriendRdns(new XBillDnsRecordClient()
+                .getPtrRecord(session.getFriendAddr())
+                .orElse(session.getFriendAddr()));
     }
 
     /**
@@ -100,9 +106,13 @@ public class Connection extends SmtpFoundation {
 
         int retry = session.getRetry() > 0 ? session.getRetry() : 1;
 
+        if (session.getMx() == null || session.getMx().isEmpty()) {
+            throw new SmtpException("No MX to connect to");
+        }
+
         for (int i = 0; i < retry; i++) {
-            server = session.getMx().get(i % session.getMx().size());
             try {
+                server = session.getMx().get(i % session.getMx().size());
                 log.info("Connecting to: {}:{}", server, session.getPort());
 
                 socket = new Socket();
@@ -124,11 +134,11 @@ public class Connection extends SmtpFoundation {
                     session.getSessionTransactionList().addTransaction("SMTP", read, false);
                     break;
                 }
-            } catch (IOException e) {
+            } catch (Exception e) {
                 if (i == retry - 1) {
                     throw e;
                 }
-                log.info("Error reading/writing: {}", e.getMessage());
+                log.info("Connection error: {}", e.getMessage());
                 Sleep.nap(session.getDelay() * 1000);
             }
         }
@@ -140,6 +150,7 @@ public class Connection extends SmtpFoundation {
      * @throws IOException Unable to communicate.
      */
     public void buildStreams() throws IOException {
+        ThreadContext.put("bCode", socket.getRemoteSocketAddress().toString());
         inc = new LineInputStream(socket.getInputStream());
         out = new DataOutputStream(socket.getOutputStream());
     }
@@ -151,6 +162,16 @@ public class Connection extends SmtpFoundation {
      */
     public Session getSession() {
         return session;
+    }
+
+    /**
+     * Gets security policy from session for TLS enforcement.
+     *
+     * @return SecurityPolicy or null if not set.
+     */
+    @Override
+    protected SecurityPolicy getSecurityPolicy() {
+        return session != null ? session.getSecurityPolicy() : null;
     }
 
     /**
@@ -189,7 +210,7 @@ public class Connection extends SmtpFoundation {
      * @return Optional of UserConfig.
      */
     public Optional<UserConfig> getUser(String username) {
-        return Config.getServer().getUser(username);
+        return Config.getServer().getUsers().getUser(username);
     }
 
     /**

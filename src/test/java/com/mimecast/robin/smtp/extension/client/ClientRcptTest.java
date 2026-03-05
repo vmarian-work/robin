@@ -17,7 +17,7 @@ class ClientRcptTest {
 
     @BeforeAll
     static void before() throws ConfigurationException {
-        Foundation.init("src/test/resources/");
+        Foundation.init("src/test/resources/cfg/");
     }
 
     @Test
@@ -30,7 +30,7 @@ class ClientRcptTest {
         MessageEnvelope envelope = new MessageEnvelope();
         envelope.setMail("tony@example.com");
         envelope.setRcpt("pepper@example.com");
-        envelope.setFile("src/test/resources/lipsum.eml");
+        envelope.setFile("src/test/resources/mime/lipsum.eml");
         connection.getSession().addEnvelope(envelope);
 
         new ClientMail().process(connection); // required before RCPT
@@ -55,7 +55,7 @@ class ClientRcptTest {
         MessageEnvelope envelope = new MessageEnvelope();
         envelope.setMail("tony@example.com");
         envelope.setRcpts(Collections.singletonList("pepper@example.com"));
-        envelope.setFile("src/test/resources/lipsum.eml");
+        envelope.setFile("src/test/resources/mime/lipsum.eml");
         connection.getSession().addEnvelope(envelope);
 
         new ClientMail().process(connection); // required before RCPT

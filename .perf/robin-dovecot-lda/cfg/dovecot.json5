@@ -1,0 +1,46 @@
+{
+  // Enable Dovecot authentication and mailbox integration.
+  auth: true,
+
+  // Use socket authentication backend (same-container).
+  authSocket: {
+    enabled: true,
+    client: "/run/dovecot/auth-client",
+    userdb: "/run/dovecot/auth-userdb"
+  },
+
+  // Disable SQL authentication (we're using sockets).
+  authSql: {
+    enabled: false,
+
+    // Query to list users for integration API.
+    usersQuery: "SELECT email FROM users",
+
+    // Query to check if a domain is served (returns any row if served).
+    domainQuery: "",
+
+    // Query to resolve aliases to real destination addresses.
+    aliasQuery: ""
+  },
+
+  // Disable LMTP backend (we're using LDA).
+  saveLmtp: {
+    enabled: false
+  },
+
+  // Use LDA backend for email delivery (same-container).
+  saveLda: {
+    enabled: true,
+    ldaBinary: "/usr/lib/dovecot/dovecot-lda",
+    inboxFolder: "INBOX",
+    sentFolder: "Sent",
+    maxConcurrency: 100,
+    ldaTimeoutSeconds: 30
+  },
+
+  // Delivery options
+  inlineSaveMaxAttempts: 3,
+  inlineSaveRetryDelay: 2,
+  failureBehaviour: "retry",
+  maxRetryCount: 10
+}

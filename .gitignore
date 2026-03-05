@@ -1,4 +1,13 @@
 *.iml
 .idea/
+.suite/etc/dovecot/certs/
+.suite/etc/dovecot/dh.pem
+.perf/.utils/
+.perf/results/
+.perf/*/results/
+*.log
 log/
+store/
 target/
+*.class
+.claude/

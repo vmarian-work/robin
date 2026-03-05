@@ -1,0 +1,28 @@
+[
+  {
+    name: "local",
+    mx: ["127.0.0.1"],
+    port: 25
+  },
+
+  {
+    name: "docker",
+    mx: ["127.0.0.1"],
+    port: 2525
+  },
+
+  {
+    name: "com",
+    mx: ["example.com"],
+    port: 25
+  },
+
+  {
+    name: "net",
+    mx: ["example.net"],
+    port: 465,
+    auth: true,
+    user: "tony@example.com",
+    pass: "stark"
+  }
+]

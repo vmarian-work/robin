@@ -1,0 +1,157 @@
+Magic client
+============
+
+Case files inherit the default config from client.json5.
+However, in some cases you may want to use the defaults in some cases.
+For those cases you may use the following magic variables in case files.
+
+- `{$mail}` - This always references the client.json5 mail param value if any.
+- `{$rcpt}` - This always references the client.json5 rcpt param first value if any.
+
+
+Magic session
+=============
+
+The Session object has a magic store where it loads up CLI params, properties file data and data from external assertions.
+It can also be seeded using a `$` variable in the case file like so:
+
+    $: {
+        fromUser: "robin",
+        fromDomain: "example.com",
+        fromAddress: "{$fromUser}@{$fromDomain}",
+        toUser: "lady",
+        toDomain: "example.com",
+        toAddress: "{$toUser}@{$toDomain}",
+    }
+
+Lastly the session also contains the following:
+- `{$uid}` - The Session uid used in logging and storage file path.
+- `{$yymd}` - Date in `yyyyMMdd` format and storage file path.
+
+All of these can be used through the case files to aid testing automation.
+
+
+Magic eml
+=========
+
+Email (.eml) files may contain these magic variables.
+Use these to program your emails to autocomplete information.
+
+- `{$DATE}` - RFC compliant current date.
+- `{$YYMD}` - YYYYMMDD date.
+- `{$YEAR}` - Current year.
+- `{$MSGID}` - Random string. Combines with {$MAILFROM} to form a valid Message-ID.
+- `{$MAILFROM}` - Envelope mail address.
+- `{$MAIL}` - Envelope mail address.
+- `{$RCPTTO}` - Envelope rcpt address.
+- `{$RCPT}` - Envelope rcpt address.
+- `{$HEADERS}` - Magic headers.
+- `{$HEADERS[*]}` - Magic header by name.
+- `{$RANDNO}` - Random number between 1 and 10.
+- `{$RANDCH}` - Random 20 alpha characters.
+- `{$RANDNO#}` - Generates random number of given length (example: `{$RANDNO3}`).
+- `{$RANDCH#}` - Random alpha characters of given length (example: `{$RANDCH15}`).
+- `{$HEADERS}` - Add all custom headers.
+- `{$HEADERS[#]}` - Add header value by key (example: `{$HEADERS[FROM]}`).
+
+If you wish to prepend headers to an email you can set `prependHeaders` boolean to `true`.
+_(This can result in duplicate headers when magic headers from above are used with an eml from file.)_  
+
+    envelopes: [
+      headers: {
+        "x-example-one": "1",
+        "x-example-two": "2"
+      },
+      prependHeaders: true,
+      file: "/path/to/eml/file.eml"
+    }
+
+
+Magic eml headers
+=================
+
+The following headers will enable additional functionalities within the Robin server component upon receipt.
+
+- `X-Robin-Filename` - If a value is present and valid filename, this will be used to rename the stored eml file.
+- `X-Robin-Relay` - If a value is present and valid server name and optional port number email will be relayed to it post receipt.
+- `X-Robin-Chaos` - If present and chaos headers are enabled, allows forcing specific return values for testing exception scenarios.
+
+
+X-Robin-Filename header
+------------------------
+
+The `X-Robin-Filename` header allows you to control the filename used when storing emails to disk. When present, the server will rename the saved email file to match the header value instead of using the default naming pattern (`yyyyMMdd.{UID}.eml`).
+
+This feature is useful for organizing test emails with meaningful names, making it easier to locate and review specific test cases in the storage directory. The header value should contain only a valid filename (without path separators). If a file with the same name already exists, it will be deleted before renaming.
+
+**Configuration**: This feature can be disabled by setting `disableRenameHeader: true` in the `storage` section of `server.json5`.
+
+**Example:**
+```
+X-Robin-Filename: test-case-auth-failure.eml
+```
+
+This will save the email as `test-case-auth-failure.eml` in the storage directory instead of the default timestamped filename.
+
+
+X-Robin-Relay header
+--------------------
+
+The `X-Robin-Relay` header instructs the server to relay the received email to another SMTP server after processing. This is useful for creating email forwarding chains, testing relay scenarios, or integrating with external mail systems.
+
+The header value should contain a hostname or IP address, optionally followed by a colon and port number. The server will queue the email for relay delivery after completing all storage processors. The relay connection supports SMTP, ESMTP, and LMTP protocols with TLS and authentication if configured.
+
+**Configuration**: This feature can be disabled by setting `disableRelayHeader: true` in the `relay` section of `server.json5`. Additional relay behavior can be configured for inbound/outbound messages independently.
+
+**Examples:**
+```
+X-Robin-Relay: mail.example.com
+X-Robin-Relay: 192.168.1.100:2525
+X-Robin-Relay: smtp.relay.com:587
+```
+
+The email will be queued for delivery to the specified server. If the relay fails, the message will be retried according to the queue configuration settings.
+
+
+X-Robin-Chaos header
+--------------------
+
+The `X-Robin-Chaos` header allows testing exception scenarios by forcing storage processors to return predefined results without performing their normal processing logic. This enables comprehensive testing of error handling, retry mechanisms, and failure scenarios without requiring actual service failures.
+
+When a chaos header matches a storage processor or client, the component is still instantiated and can perform initialization or logging, but it returns the forced value immediately before executing its main logic. This approach maintains system integrity while allowing controlled testing of error conditions.
+
+**WARNING:** This feature is intended for testing purposes only. Do NOT enable in production environments.
+
+**Configuration**: Enable chaos headers by setting `chaosHeaders: true` in the root level of `server.json5`.
+
+The header value format is: `ClassName; param1=value1; param2=value2`
+
+Where:
+- `ClassName` - The implementation class where the action occurs (e.g., `LocalStorageClient`, `DovecotLdaClient`).
+- Parameters define the forced behavior specific to each implementation.
+
+Multiple chaos headers can be present in the same email to test different scenarios.
+
+**Examples:**
+
+**Force any storage processor to return a specific value:**
+```
+X-Robin-Chaos: LocalStorageClient; processor=AVStorageProcessor; return=true
+X-Robin-Chaos: LocalStorageClient; processor=SpamStorageProcessor; return=false
+X-Robin-Chaos: LocalStorageClient; processor=LocalStorageProcessor; return=true
+```
+
+This forces the specified storage processor to return the predefined value without performing its normal processing logic. The `processor` parameter should match the processor class name (e.g., `AVStorageProcessor` for virus scanning, `SpamStorageProcessor` for spam scanning, `LocalStorageProcessor` for local mailbox storage, `DovecotStorageProcessor` for Dovecot LDA delivery). The `return` parameter specifies the forced return value (`true` to continue processing, `false` to stop with error).
+
+**Important:** The processor is still called and can perform initialization or logging, but it returns the forced value immediately before executing its main logic.
+
+**Simulate Dovecot LDA failure:**
+```
+X-Robin-Chaos: DovecotLdaClient; recipient=tony@example.com; exitCode=1; message="storage full"
+```
+
+This bypasses the actual Dovecot LDA call for the specified recipient and returns the predefined result:
+- Exit code: `1` (failure)
+- Error message: `"storage full"`
+
+The `exitCode` parameter is an integer and the `message` parameter contains the error message. Quotes are optional for the message parameter unless it contains special characters.
