@@ -26,6 +26,11 @@ public final class SmtpMetrics {
     private static volatile Counter dosTarpitCounter;
     private static volatile Counter dosSlowTransferRejectionCounter;
     private static volatile Counter dosCommandFloodRejectionCounter;
+    private static volatile Counter whitelistBypassCounter;
+    private static volatile Counter adaptiveRateLimitAppliedCounter;
+    private static volatile Counter geoIpBlockRejectionCounter;
+    private static volatile Counter geoIpLimitAppliedCounter;
+    private static volatile Counter distributedStoreErrorCounter;
 
     /**
      * Private constructor for utility class.
@@ -135,6 +140,46 @@ public final class SmtpMetrics {
      */
     public static void incrementDosCommandFloodRejection() {
         incrementCounter(() -> dosCommandFloodRejectionCounter, "DoS command flood rejection counter");
+    }
+
+    /**
+     * Increment the whitelist bypass counter.
+     * <p>Called when a connection is accepted from a whitelisted IP, bypassing DoS limits and RBL checks.
+     */
+    public static void incrementWhitelistBypass() {
+        incrementCounter(() -> whitelistBypassCounter, "whitelist bypass counter");
+    }
+
+    /**
+     * Increment the adaptive rate limit applied counter.
+     * <p>Called when adaptive rate limiting reduces connection limits due to high server load.
+     */
+    public static void incrementAdaptiveRateLimitApplied() {
+        incrementCounter(() -> adaptiveRateLimitAppliedCounter, "adaptive rate limit applied counter");
+    }
+
+    /**
+     * Increment the GeoIP block rejection counter.
+     * <p>Called when a connection is rejected due to GeoIP country block policy.
+     */
+    public static void incrementGeoIpBlockRejection() {
+        incrementCounter(() -> geoIpBlockRejectionCounter, "GeoIP block rejection counter");
+    }
+
+    /**
+     * Increment the GeoIP limit applied counter.
+     * <p>Called when a connection from a GeoIP-limited country has reduced limits applied.
+     */
+    public static void incrementGeoIpLimitApplied() {
+        incrementCounter(() -> geoIpLimitAppliedCounter, "GeoIP limit applied counter");
+    }
+
+    /**
+     * Increment the distributed store error counter.
+     * <p>Called when a Redis operation in {@link com.mimecast.robin.smtp.security.RedisConnectionStore} fails.
+     */
+    public static void incrementDistributedStoreError() {
+        incrementCounter(() -> distributedStoreErrorCounter, "distributed store error counter");
     }
 
     /**
@@ -264,6 +309,26 @@ public final class SmtpMetrics {
                     .description("Number of connections rejected due to command flooding")
                     .register(MetricsRegistry.getPrometheusRegistry());
 
+            whitelistBypassCounter = Counter.builder("robin.whitelist.bypass")
+                    .description("Number of connections from whitelisted IPs bypassing DoS limits and RBL")
+                    .register(MetricsRegistry.getPrometheusRegistry());
+
+            adaptiveRateLimitAppliedCounter = Counter.builder("robin.adaptive.ratelimit.applied")
+                    .description("Number of times adaptive rate limiting reduced connection limits")
+                    .register(MetricsRegistry.getPrometheusRegistry());
+
+            geoIpBlockRejectionCounter = Counter.builder("robin.geoip.block.rejection")
+                    .description("Number of connections rejected due to GeoIP country block policy")
+                    .register(MetricsRegistry.getPrometheusRegistry());
+
+            geoIpLimitAppliedCounter = Counter.builder("robin.geoip.limit.applied")
+                    .description("Number of connections with reduced limits due to GeoIP country limit policy")
+                    .register(MetricsRegistry.getPrometheusRegistry());
+
+            distributedStoreErrorCounter = Counter.builder("robin.distributed.store.error")
+                    .description("Number of errors encountered by the Redis connection store")
+                    .register(MetricsRegistry.getPrometheusRegistry());
+
             Counter.builder("robin.email.receipt.exception")
                     .description("Number of exceptions during email receipt processing")
                     .tag("exception_type", "Exception")
@@ -317,6 +382,26 @@ public final class SmtpMetrics {
                     .description("Number of connections rejected due to command flooding")
                     .register(MetricsRegistry.getGraphiteRegistry());
 
+            whitelistBypassCounter = Counter.builder("robin.whitelist.bypass")
+                    .description("Number of connections from whitelisted IPs bypassing DoS limits and RBL")
+                    .register(MetricsRegistry.getGraphiteRegistry());
+
+            adaptiveRateLimitAppliedCounter = Counter.builder("robin.adaptive.ratelimit.applied")
+                    .description("Number of times adaptive rate limiting reduced connection limits")
+                    .register(MetricsRegistry.getGraphiteRegistry());
+
+            geoIpBlockRejectionCounter = Counter.builder("robin.geoip.block.rejection")
+                    .description("Number of connections rejected due to GeoIP country block policy")
+                    .register(MetricsRegistry.getGraphiteRegistry());
+
+            geoIpLimitAppliedCounter = Counter.builder("robin.geoip.limit.applied")
+                    .description("Number of connections with reduced limits due to GeoIP country limit policy")
+                    .register(MetricsRegistry.getGraphiteRegistry());
+
+            distributedStoreErrorCounter = Counter.builder("robin.distributed.store.error")
+                    .description("Number of errors encountered by the Redis connection store")
+                    .register(MetricsRegistry.getGraphiteRegistry());
+
             Counter.builder("robin.email.receipt.exception")
                     .description("Number of exceptions during email receipt processing")
                     .tag("exception_type", "Exception")
@@ -341,5 +426,10 @@ public final class SmtpMetrics {
         dosTarpitCounter = null;
         dosSlowTransferRejectionCounter = null;
         dosCommandFloodRejectionCounter = null;
+        whitelistBypassCounter = null;
+        adaptiveRateLimitAppliedCounter = null;
+        geoIpBlockRejectionCounter = null;
+        geoIpLimitAppliedCounter = null;
+        distributedStoreErrorCounter = null;
     }
 }

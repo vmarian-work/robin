@@ -48,6 +48,9 @@ public class ServerConfig extends ConfigFoundation {
         CONFIG_FILENAMES.put("clamav", "clamav.json5");
         CONFIG_FILENAMES.put("rspamd", "rspamd.json5");
         CONFIG_FILENAMES.put("blocklist", "blocklist.json5");
+        CONFIG_FILENAMES.put("whitelist", "whitelist.json5");
+        CONFIG_FILENAMES.put("geoip", "geoip.json5");
+        CONFIG_FILENAMES.put("distributedRate", "distributed-rate.json5");
         CONFIG_FILENAMES.put("blackhole", "blackhole.json5");
         CONFIG_FILENAMES.put("proxy", "proxy.json5");
         CONFIG_FILENAMES.put("bots", "bots.json5");
@@ -314,6 +317,63 @@ public class ServerConfig extends ConfigFoundation {
     }
 
     /**
+     * Gets GeoIP configuration.
+     *
+     * @return GeoIpConfig instance.
+     */
+    public GeoIpConfig getGeoIpConfig() {
+        loadExternalIfAbsent("geoip", Map.class);
+
+        if (map.containsKey("geoip")) {
+            return new GeoIpConfig(getMapProperty("geoip"));
+        }
+        // Return default config if not defined.
+        return new GeoIpConfig(null);
+    }
+
+    /**
+     * Gets distributed rate limiting configuration.
+     *
+     * @return DistributedRateConfig instance.
+     */
+    public DistributedRateConfig getDistributedRateConfig() {
+        loadExternalIfAbsent("distributedRate", Map.class);
+
+        if (map.containsKey("distributedRate")) {
+            return new DistributedRateConfig(getMapProperty("distributedRate"));
+        }
+        return new DistributedRateConfig(null);
+    }
+
+    /**
+     * Gets adaptive rate limiting configuration.
+     * <p>This configuration lives inline inside {@code server.json5} under the {@code adaptiveRate} key.
+     *
+     * @return AdaptiveRateConfig instance.
+     */
+    public AdaptiveRateConfig getAdaptiveRateConfig() {
+        if (map.containsKey("adaptiveRate")) {
+            return new AdaptiveRateConfig(getMapProperty("adaptiveRate"));
+        }
+        return new AdaptiveRateConfig(null);
+    }
+
+    /**
+     * Gets whitelist configuration.
+     *
+     * @return WhitelistConfig instance.
+     */
+    public WhitelistConfig getWhitelistConfig() {
+        loadExternalIfAbsent("whitelist", Map.class);
+
+        if (map.containsKey("whitelist")) {
+            return new WhitelistConfig(getMapProperty("whitelist"));
+        }
+        // Return default config if not defined.
+        return new WhitelistConfig(null);
+    }
+
+    /**
      * Gets blocklist configuration.
      *
      * @return BlocklistConfig instance.
@@ -405,6 +465,16 @@ public class ServerConfig extends ConfigFoundation {
     public BasicConfig getRelay() {
         loadExternalIfAbsent("relay", Map.class);
         return new BasicConfig(getMapProperty("relay"));
+    }
+
+    /**
+     * Gets IP pool config from relay config.
+     *
+     * @return IpPoolConfig instance.
+     */
+    public IpPoolConfig getIpPools() {
+        loadExternalIfAbsent("relay", Map.class);
+        return new IpPoolConfig(getMapProperty("relay"));
     }
 
     /**

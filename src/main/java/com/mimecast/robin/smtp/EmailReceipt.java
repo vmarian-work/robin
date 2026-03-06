@@ -4,6 +4,7 @@ import com.mimecast.robin.config.server.ListenerConfig;
 import com.mimecast.robin.config.server.WebhookConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Extensions;
+import com.mimecast.robin.main.Factories;
 import com.mimecast.robin.scanners.rbl.RblChecker;
 import com.mimecast.robin.scanners.rbl.RblResult;
 import com.mimecast.robin.smtp.connection.Connection;
@@ -16,7 +17,6 @@ import com.mimecast.robin.smtp.metrics.SmtpMetrics;
 import com.mimecast.robin.smtp.security.ConnectionTracker;
 import com.mimecast.robin.smtp.session.EmailDirection;
 import com.mimecast.robin.smtp.verb.Verb;
-import com.mimecast.robin.smtp.webhook.WebhookCaller;
 import com.mimecast.robin.smtp.webhook.WebhookResponse;
 import com.mimecast.robin.util.Sleep;
 import org.apache.logging.log4j.LogManager;
@@ -62,6 +62,12 @@ public class EmailReceipt implements Runnable {
     private int tarpitViolations = 0;
 
     /**
+     * Whitelist flag.
+     * <p>When true, this connection bypasses RBL checks and command rate limiting.
+     */
+    private boolean whitelisted = false;
+
+    /**
      * Constructs a new EmailReceipt instance with given Connection instance.
      * <p>For testing purposes only.
      *
@@ -69,6 +75,20 @@ public class EmailReceipt implements Runnable {
      */
     EmailReceipt(Connection connection) {
         this.connection = connection;
+    }
+
+    /**
+     * Constructs a new EmailReceipt instance with given socket.
+     *
+     * @param socket      Inbound socket.
+     * @param config      Listener configuration instance.
+     * @param secure      Secure (TLS) listener.
+     * @param submission  Submission (MSA) listener.
+     * @param whitelisted True if the connecting IP is on the trusted whitelist.
+     */
+    public EmailReceipt(Socket socket, ListenerConfig config, boolean secure, boolean submission, boolean whitelisted) {
+        this(socket, config, secure, submission);
+        this.whitelisted = whitelisted;
     }
 
     /**
@@ -124,8 +144,10 @@ public class EmailReceipt implements Runnable {
             // Check client against RBLs and send appropriate greeting.
             // If blacklisted and inbound non-secure, send rejection.
             // Secure connections will perform RBL check at MAIL command.
+            // Whitelisted IPs bypass this check entirely.
             if (connection.getSession().isInbound() &&
                     !connection.getSession().isSecurePort() &&
+                    !whitelisted &&
                     !isReputableIp()) {
                 // Send rejection message for blacklisted IP.
                 connection.write(String.format(SmtpResponses.LISTED_CLIENT_550, connection.getSession().getUID()));
@@ -161,9 +183,11 @@ public class EmailReceipt implements Runnable {
                 // Special handling for MAIL command on secure inbound connections.
                 // Perform RBL check here once we know the connection is not outbound.
                 // Secure port supports submission when authenticated.
+                // Whitelisted IPs bypass this check entirely.
                 if (verb.getVerb().equalsIgnoreCase("mail") &&
                         connection.getSession().isInbound() &&
                         connection.getSession().isSecurePort() &&
+                        !whitelisted &&
                         !isReputableIp()) {
                     // Send rejection message for blacklisted IP.
                     connection.write(String.format(SmtpResponses.LISTED_CLIENT_550, connection.getSession().getUID()));
@@ -349,10 +373,10 @@ public class EmailReceipt implements Runnable {
                 }
 
                 log.debug("Calling webhook for extension: {}", extensionKey);
-                WebhookResponse response = WebhookCaller.call(config, connection, verb);
+                WebhookResponse response = Factories.getWebhookCaller().call(config, connection, verb);
 
                 // Check if webhook returned a custom SMTP response.
-                String smtpResponse = WebhookCaller.extractSmtpResponse(response.getBody());
+                String smtpResponse = Factories.getWebhookCaller().extractSmtpResponse(response.getBody());
                 if (smtpResponse != null && !smtpResponse.isEmpty()) {
                     connection.write(smtpResponse + " [" + connection.getSession().getUID() + "]");
                     return !smtpResponse.startsWith("4") && !smtpResponse.startsWith("5"); // Stop processing, webhook provided response.
@@ -385,11 +409,17 @@ public class EmailReceipt implements Runnable {
     /**
      * Checks command rate limits for DoS protection.
      * <p>Implements progressive tarpit delays for repeated violations.
+     * <p>Whitelisted IPs are exempt from command rate limiting.
      *
      * @return True if command should be processed, false to disconnect.
      * @throws IOException Unable to communicate.
      */
     private boolean checkCommandRateLimits() throws IOException {
+        // Whitelisted IPs bypass command rate limiting entirely.
+        if (whitelisted) {
+            return true;
+        }
+
         String clientIp = connection.getSession().getFriendAddr();
 
         // Record command for this IP.

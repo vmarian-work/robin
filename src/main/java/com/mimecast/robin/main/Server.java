@@ -1,15 +1,18 @@
 package com.mimecast.robin.main;
 
 import com.mimecast.robin.auth.SqlAuthManager;
-import com.mimecast.robin.config.server.ServerConfig;
 import com.mimecast.robin.config.DovecotConfig;
+import com.mimecast.robin.config.server.ServerConfig;
 import com.mimecast.robin.db.SharedDataSource;
 import com.mimecast.robin.endpoints.ApiEndpoint;
 import com.mimecast.robin.endpoints.RobinServiceEndpoint;
 import com.mimecast.robin.metrics.MetricsCron;
 import com.mimecast.robin.queue.RelayQueueCron;
+import com.mimecast.robin.scanners.DkimSigningLookup;
 import com.mimecast.robin.smtp.SmtpListener;
 import com.mimecast.robin.smtp.metrics.SmtpMetrics;
+import com.mimecast.robin.smtp.security.ConnectionStoreFactory;
+import com.mimecast.robin.smtp.security.ConnectionTracker;
 import com.mimecast.robin.storage.LmtpConnectionPool;
 import com.mimecast.robin.storage.StorageCleaner;
 import com.mimecast.robin.util.VaultClient;
@@ -143,6 +146,9 @@ public class Server extends Foundation {
      * This includes storage cleaning, queue management, service and API endpoints.
      */
     private static void startup() {
+        // Wire the connection store (local or Redis) before any connections are accepted.
+        ConnectionTracker.setStore(ConnectionStoreFactory.create(Config.getServer().getDistributedRateConfig()));
+
         // Initialize Vault integration for secrets management.
         initializeVault();
 
@@ -289,10 +295,27 @@ public class Server extends Foundation {
             // Close shared DataSource if initialized.
             try {
                 // Close shared SqlAuthManager first
-                try { SqlAuthManager.close(); } catch (Exception ignore) {}
+                try {
+                    SqlAuthManager.close();
+                } catch (Exception ignore) {
+                }
                 SharedDataSource.close();
             } catch (Exception e) {
                 log.warn("Error closing shared DataSource: {}", e.getMessage());
+            }
+
+            // Close DKIM signing pool if initialized.
+            try {
+                DkimSigningLookup.close();
+            } catch (Exception e) {
+                log.warn("Error closing DkimSigningLookup pool: {}", e.getMessage());
+            }
+
+            // Shutdown connection tracker store (releases Redis pool if applicable).
+            try {
+                ConnectionTracker.shutdown();
+            } catch (Exception e) {
+                log.warn("Error shutting down connection tracker: {}", e.getMessage());
             }
 
             log.info("Shutdown complete.");

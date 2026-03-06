@@ -11,6 +11,8 @@ import com.mimecast.robin.config.BasicConfig;
 import com.mimecast.robin.queue.QueueDatabase;
 import com.mimecast.robin.queue.QueueFactory;
 import com.mimecast.robin.queue.RelaySession;
+import com.mimecast.robin.queue.relay.IpPoolSelector;
+import com.mimecast.robin.signing.DkimSigner;
 import com.mimecast.robin.smtp.auth.DigestCache;
 import com.mimecast.robin.smtp.auth.StaticDigestCache;
 import com.mimecast.robin.smtp.connection.Connection;
@@ -19,6 +21,8 @@ import com.mimecast.robin.smtp.extension.client.DefaultBehaviour;
 import com.mimecast.robin.smtp.security.DefaultTLSSocket;
 import com.mimecast.robin.smtp.security.TLSSocket;
 import com.mimecast.robin.smtp.session.Session;
+import com.mimecast.robin.smtp.webhook.WebhookCaller;
+import com.mimecast.robin.smtp.webhook.WebhookCallerInterface;
 import com.mimecast.robin.storage.*;
 import com.mimecast.robin.trust.PermissiveTrustManager;
 import com.mimecast.robin.trust.TrustManager;
@@ -92,12 +96,12 @@ public class Factories {
      * MTA storage processors.
      * <p>Used to do post receipt processing like virus and spam scanning or dovecot LDA delivery.
      */
-    private static final List<Callable<StorageProcessor>> storageProcessors = List.of(
+    private static final List<Callable<StorageProcessor>> storageProcessors = new ArrayList<>(List.of(
             SpamStorageProcessor::new,
             AVStorageProcessor::new,
             LocalStorageProcessor::new,
             DovecotStorageProcessor::new
-    );
+    ));
 
     /**
      * External clients.
@@ -314,6 +318,23 @@ public class Factories {
     }
 
     /**
+     * Sets StorageProcessors, replacing all existing entries.
+     *
+     * @param processors List of StorageProcessor callables.
+     */
+    public static void setStorageProcessors(List<Callable<StorageProcessor>> processors) {
+        storageProcessors.clear();
+        storageProcessors.addAll(processors);
+    }
+
+    /**
+     * Clears all StorageProcessors.
+     */
+    public static void clearStorageProcessors() {
+        storageProcessors.clear();
+    }
+
+    /**
      * Puts ExternalClient.
      *
      * @param key      Config map key.
@@ -401,6 +422,73 @@ public class Factories {
     }
 
     /**
+     * IP pool selector implementation.
+     * <p>When set, overrides the default weighted round-robin pool selector.
+     */
+    private static Callable<IpPoolSelector> ipPoolSelector;
+
+    /**
+     * Sets IpPoolSelector callable.
+     *
+     * @param callable IpPoolSelector callable.
+     */
+    public static void setIpPoolSelector(Callable<IpPoolSelector> callable) {
+        ipPoolSelector = callable;
+    }
+
+    /**
+     * Gets IpPoolSelector.
+     * <p>Returns a default {@link IpPoolSelector} backed by the relay config when no override is registered.
+     *
+     * @return IpPoolSelector instance.
+     */
+    public static IpPoolSelector getIpPoolSelector() {
+        if (ipPoolSelector != null) {
+            try {
+                return ipPoolSelector.call();
+            } catch (Exception e) {
+                log.error("Error calling IP pool selector: {}", e.getMessage());
+            }
+        }
+        return new IpPoolSelector(Config.getServer().getIpPools());
+    }
+
+    /**
+     * DKIM signer implementation.
+     * <p>When set, overrides the config-based backend selection in relay signing.
+     */
+    private static Callable<DkimSigner> dkimSigner;
+
+    /**
+     * Sets DkimSigner callable.
+     * <p>When set, overrides the config-based backend ({@code rspamd} or {@code native})
+     * selected by the {@code dkimSigning.backend} config field.
+     *
+     * @param callable DkimSigner callable.
+     */
+    public static void setDkimSigner(Callable<DkimSigner> callable) {
+        dkimSigner = callable;
+    }
+
+    /**
+     * Gets DkimSigner.
+     * <p>Returns {@code null} if no override has been registered; callers should
+     * then fall back to config-based backend selection.
+     *
+     * @return DkimSigner instance, or null if not registered.
+     */
+    public static DkimSigner getDkimSigner() {
+        if (dkimSigner != null) {
+            try {
+                return dkimSigner.call();
+            } catch (Exception e) {
+                log.error("Error calling DKIM signer: {}", e.getMessage());
+            }
+        }
+        return null;
+    }
+
+    /**
      * Sets QueueDatabase callable for custom factory override.
      * <p>Used primarily in tests to inject custom queue implementations.
      *
@@ -429,5 +517,36 @@ public class Factories {
 
         // Use factory to select appropriate backend based on configuration.
         return QueueFactory.createQueueDatabase();
+    }
+
+    /**
+     * Webhook caller implementation.
+     * <p>When set, overrides the default WebhookCaller.
+     */
+    private static Callable<WebhookCallerInterface> webhookCaller;
+
+    /**
+     * Sets WebhookCaller callable.
+     *
+     * @param callable WebhookCallerInterface callable.
+     */
+    public static void setWebhookCaller(Callable<WebhookCallerInterface> callable) {
+        Factories.webhookCaller = callable;
+    }
+
+    /**
+     * Gets WebhookCallerInterface instance.
+     *
+     * @return WebhookCallerInterface instance.
+     */
+    public static WebhookCallerInterface getWebhookCaller() {
+        if (webhookCaller != null) {
+            try {
+                return webhookCaller.call();
+            } catch (Exception e) {
+                log.error("Error calling webhook caller: {}", e.getMessage());
+            }
+        }
+        return new WebhookCaller();
     }
 }
