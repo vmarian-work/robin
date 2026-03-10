@@ -2,19 +2,39 @@
 # This stack includes: Postfix + Dovecot + PostgreSQL
 
 services:
+  dovecot-mail-init:
+    image: alpine:3.20
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        mkdir -p /var/mail/vhosts/example.com
+        chown -R 5000:5000 /var/mail/vhosts
+        chmod 2775 /var/mail/vhosts /var/mail/vhosts/example.com
+    volumes:
+      - dovecot-data:/var/mail/vhosts
+    restart: "no"
+
   postgres:
     image: postgres:latest
-    container_name: postgres
     command:
       - "postgres"
       - "-c"
-      - "logging_collector=on"
-      - "-c"
-      - "log_directory=/var/log/postgresql"
-      - "-c"
-      - "log_filename=postgresql.log"
-      - "-c"
       - "log_destination=stderr"
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
     environment:
       POSTGRES_DB: robin
       POSTGRES_USER: robin
@@ -23,8 +43,9 @@ services:
       PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
       - ../.shared/db-init:/docker-entrypoint-initdb.d:ro
-      - ../../store/postgres:/var/lib/postgresql
-      - ../../log/postgres:/var/log/postgresql
+      - postgres-data:/var/lib/postgresql
+    tmpfs:
+      - /var/log:size=32m
     networks:
       postfix-net:
         aliases:
@@ -37,21 +58,23 @@ services:
 
   dovecot:
     image: dovecot/dovecot:latest
-    container_name: dovecot
     user: "0:0"
     cap_add:
       - CHOWN
     volumes:
       - ./dovecot/etc:/etc/dovecot
-      - ../../store/dovecot:/var/mail/vhosts
-      - ../../log/dovecot:/var/log
+      - dovecot-data:/var/mail/vhosts
       - dovecot-sockets:/var/run/dovecot
       - postfix-spool:/var/spool/postfix
+    tmpfs:
+      - /var/log:size=64m
     networks:
       postfix-net:
         aliases:
           - lmtp-backend
     depends_on:
+      dovecot-mail-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
@@ -64,13 +87,16 @@ services:
     build:
       context: ../../
       dockerfile: .perf/.shared/postfix/Dockerfile
-    container_name: postfix
     volumes:
-      - ../.shared/postfix/etc/postfix:/etc/postfix
-      - ../../store/dovecot:/var/mail/vhosts
-      - ../../log/postfix:/var/log/postfix
+      - ../.shared/postfix/etc/postfix/main.cf:/etc/postfix/main.cf:ro
+      - ../.shared/postfix/etc/postfix/master.cf:/etc/postfix/master.cf:ro
+      - ../.shared/postfix/etc/postfix/pgsql-virtual-mailbox-domains.cf:/etc/postfix/pgsql-virtual-mailbox-domains.cf:ro
+      - ../.shared/postfix/etc/postfix/pgsql-virtual-mailbox-maps.cf:/etc/postfix/pgsql-virtual-mailbox-maps.cf:ro
+      - dovecot-data:/var/mail/vhosts
       - dovecot-sockets:/var/run/dovecot
       - postfix-spool:/var/spool/postfix
+    tmpfs:
+      - /var/log/postfix:size=32m
     networks:
       - postfix-net
     depends_on:
@@ -92,5 +118,7 @@ networks:
     driver: bridge
 
 volumes:
+  postgres-data:
+  dovecot-data:
   dovecot-sockets:  # Shared volume for UNIX socket communication
   postfix-spool:    # Shared Postfix spool directory

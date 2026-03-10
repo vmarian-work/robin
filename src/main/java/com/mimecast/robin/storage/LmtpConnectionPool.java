@@ -15,6 +15,7 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Connection pool for LMTP deliveries with actual connection reuse.
@@ -38,8 +39,13 @@ public class LmtpConnectionPool {
     private final long borrowTimeoutSeconds;
     private final long maxIdleTimeMs;
     private final long maxLifetimeMs;
+    private final int maxMessagesPerConnection;
     private final AtomicInteger totalConnections;
     private final AtomicInteger borrowedCount;
+    private final AtomicLong borrowTimeoutCount;
+    private final AtomicLong invalidationCount;
+    private final AtomicLong resetFailureCount;
+    private final AtomicLong messageLimitRetirementCount;
 
     // Server configuration
     private final List<String> servers;
@@ -55,12 +61,13 @@ public class LmtpConnectionPool {
      * @param borrowTimeoutSeconds Maximum time to wait when borrowing a connection.
      * @param idleTimeoutSeconds   Close idle connections after this many seconds.
      * @param maxLifetimeSeconds   Close connections after this many seconds regardless of activity.
+     * @param maxMessagesPerConnection Maximum number of envelopes to send on one TCP connection before retiring it.
      * @param servers              List of LMTP server addresses.
      * @param port                 LMTP server port.
      * @param tls                  Whether to use TLS.
      */
     public LmtpConnectionPool(int maxSize, long borrowTimeoutSeconds, long idleTimeoutSeconds,
-                              long maxLifetimeSeconds, List<String> servers, int port, boolean tls) {
+                              long maxLifetimeSeconds, int maxMessagesPerConnection, List<String> servers, int port, boolean tls) {
         this.maxSize = maxSize;
         this.borrowTimeoutSeconds = borrowTimeoutSeconds;
         this.servers = servers;
@@ -69,11 +76,16 @@ public class LmtpConnectionPool {
         this.idleConnections = new LinkedBlockingQueue<>(maxSize);
         this.totalConnections = new AtomicInteger(0);
         this.borrowedCount = new AtomicInteger(0);
+        this.borrowTimeoutCount = new AtomicLong(0);
+        this.invalidationCount = new AtomicLong(0);
+        this.resetFailureCount = new AtomicLong(0);
+        this.messageLimitRetirementCount = new AtomicLong(0);
         this.maxIdleTimeMs = idleTimeoutSeconds * 1000L;
         this.maxLifetimeMs = maxLifetimeSeconds * 1000L;
+        this.maxMessagesPerConnection = Math.max(1, maxMessagesPerConnection);
 
-        log.info("LMTP connection pool initialized: maxSize={}, borrowTimeout={}s, idleTimeout={}s, maxLifetime={}s, servers={}, port={}",
-                maxSize, borrowTimeoutSeconds, idleTimeoutSeconds, maxLifetimeSeconds, servers, port);
+        log.info("LMTP connection pool initialized: maxSize={}, borrowTimeout={}s, idleTimeout={}s, maxLifetime={}s, maxMessagesPerConnection={}, servers={}, port={}",
+                maxSize, borrowTimeoutSeconds, idleTimeoutSeconds, maxLifetimeSeconds, this.maxMessagesPerConnection, servers, port);
     }
 
     /**
@@ -133,6 +145,7 @@ public class LmtpConnectionPool {
             log.warn("Interrupted while waiting for connection");
         }
 
+        borrowTimeoutCount.incrementAndGet();
         log.warn("Timeout waiting for LMTP connection after {}s", borrowTimeoutSeconds);
         return null;
     }
@@ -152,6 +165,14 @@ public class LmtpConnectionPool {
         borrowedCount.decrementAndGet();
 
         if (closed || !pooled.isValid()) {
+            closeConnection(pooled);
+            return;
+        }
+
+        if (pooled.hasReachedMessageLimit(maxMessagesPerConnection)) {
+            messageLimitRetirementCount.incrementAndGet();
+            log.debug("Retiring LMTP connection after {} envelopes (limit={})",
+                    pooled.getDeliveredMessages(), maxMessagesPerConnection);
             closeConnection(pooled);
             return;
         }
@@ -188,6 +209,7 @@ public class LmtpConnectionPool {
         }
 
         borrowedCount.decrementAndGet();
+        invalidationCount.incrementAndGet();
         pooled.invalidate();
         closeConnection(pooled);
 
@@ -212,8 +234,13 @@ public class LmtpConnectionPool {
     /**
      * Validates that a pooled connection is still usable.
      */
-    private boolean validateConnection(PooledLmtpConnection pooled) {
+    protected boolean validateConnection(PooledLmtpConnection pooled) {
         if (!pooled.isValid() || !pooled.isConnected()) {
+            return false;
+        }
+
+        if (pooled.hasReachedMessageLimit(maxMessagesPerConnection)) {
+            log.debug("Connection reached envelope limit ({})", pooled.getDeliveredMessages());
             return false;
         }
 
@@ -235,7 +262,7 @@ public class LmtpConnectionPool {
     /**
      * Creates a new LMTP connection.
      */
-    private PooledLmtpConnection createNewConnection(MessageEnvelope envelope) {
+    protected PooledLmtpConnection createNewConnection(MessageEnvelope envelope) {
         String serverKey = servers.get(0) + ":" + port;
 
         try {
@@ -261,8 +288,7 @@ public class LmtpConnectionPool {
                 return null;
             }
 
-            totalConnections.incrementAndGet();
-            PooledLmtpConnection pooled = new PooledLmtpConnection(connection, serverKey);
+            PooledLmtpConnection pooled = trackNewConnection(connection, serverKey);
             log.debug("Created new LMTP connection to {}", serverKey);
             return pooled;
 
@@ -272,10 +298,16 @@ public class LmtpConnectionPool {
         }
     }
 
+
+    protected PooledLmtpConnection trackNewConnection(Connection connection, String serverKey) {
+        totalConnections.incrementAndGet();
+        return new PooledLmtpConnection(connection, serverKey);
+    }
+
     /**
      * Prepares a borrowed connection for reuse with a new envelope.
      */
-    private void prepareForReuse(PooledLmtpConnection pooled, MessageEnvelope envelope) {
+    protected void prepareForReuse(PooledLmtpConnection pooled, MessageEnvelope envelope) {
         Session session = pooled.getSession();
         // Clear old envelopes and add new one
         session.getEnvelopes().clear();
@@ -288,11 +320,12 @@ public class LmtpConnectionPool {
     /**
      * Sends RSET to reset the connection state.
      */
-    private boolean resetConnection(PooledLmtpConnection pooled) {
+    protected boolean resetConnection(PooledLmtpConnection pooled) {
         try {
             ClientRset rset = new ClientRset();
             return rset.process(pooled.getConnection());
         } catch (IOException e) {
+            resetFailureCount.incrementAndGet();
             log.debug("RSET failed: {}", e.getMessage());
             return false;
         }
@@ -301,7 +334,7 @@ public class LmtpConnectionPool {
     /**
      * Closes a pooled connection gracefully with QUIT and decrements counter.
      */
-    private void closeConnection(PooledLmtpConnection pooled) {
+    protected void closeConnection(PooledLmtpConnection pooled) {
         totalConnections.decrementAndGet();
         // Send QUIT before closing to be polite to the server
         if (pooled.isConnected()) {
@@ -380,6 +413,51 @@ public class LmtpConnectionPool {
     }
 
     /**
+     * Gets the number of LMTP pool borrow timeouts.
+     *
+     * @return Borrow timeout count.
+     */
+    public long getBorrowTimeoutCount() {
+        return borrowTimeoutCount.get();
+    }
+
+    /**
+     * Gets the number of LMTP pool invalidations.
+     *
+     * @return Invalidation count.
+     */
+    public long getInvalidationCount() {
+        return invalidationCount.get();
+    }
+
+    /**
+     * Gets the number of RSET failures seen while returning pooled connections.
+     *
+     * @return Reset failure count.
+     */
+    public long getResetFailureCount() {
+        return resetFailureCount.get();
+    }
+
+    /**
+     * Gets the number of pooled connections retired because they reached the envelope cap.
+     *
+     * @return Retirement count.
+     */
+    public long getMessageLimitRetirementCount() {
+        return messageLimitRetirementCount.get();
+    }
+
+    /**
+     * Gets the configured maximum number of envelopes per connection.
+     *
+     * @return Per-connection envelope cap.
+     */
+    public int getMaxMessagesPerConnection() {
+        return maxMessagesPerConnection;
+    }
+
+    /**
      * Wrapper for a pooled LMTP connection with lifecycle tracking.
      * <p>
      * Tracks connection age, idle time, and validity for pool management.
@@ -389,6 +467,7 @@ public class LmtpConnectionPool {
         private final String serverKey;
         private final long createdAt;
         private long lastUsedAt;
+        private long deliveredMessages = 0;
         private boolean valid = true;
 
         /**
@@ -439,6 +518,14 @@ public class LmtpConnectionPool {
         }
 
         /**
+         * Records one more envelope processed on this connection.
+         */
+        public void recordDeliveredMessage() {
+            deliveredMessages++;
+            touch();
+        }
+
+        /**
          * Marks the connection as invalid.
          */
         void invalidate() {
@@ -479,6 +566,14 @@ public class LmtpConnectionPool {
          */
         long getAge() {
             return System.currentTimeMillis() - createdAt;
+        }
+
+        public long getDeliveredMessages() {
+            return deliveredMessages;
+        }
+
+        boolean hasReachedMessageLimit(int maxMessagesPerConnection) {
+            return deliveredMessages >= Math.max(1, maxMessagesPerConnection);
         }
 
         /**

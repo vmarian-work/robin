@@ -247,6 +247,7 @@ public class DovecotConfig extends BasicConfig {
      */
     public static class SaveLmtp {
         private final boolean enabled;
+        private final boolean inline;
         private final List<String> servers;
         private final int port;
         private final boolean tls;
@@ -254,6 +255,7 @@ public class DovecotConfig extends BasicConfig {
         private final long connectionPoolTimeoutSeconds;
         private final long connectionIdleTimeoutSeconds;
         private final long connectionMaxLifetimeSeconds;
+        private final int connectionMaxMessagesPerConnection;
 
         /**
          * Constructs SaveLmtp from configuration map.
@@ -262,6 +264,7 @@ public class DovecotConfig extends BasicConfig {
          */
         public SaveLmtp(Map<String, Object> map) {
             this.enabled = Boolean.TRUE.equals(map.getOrDefault("enabled", true));
+            this.inline = !Boolean.FALSE.equals(map.getOrDefault("inline", true));
             @SuppressWarnings("unchecked")
             List<String> safeServers = (List<String>) map.getOrDefault("servers", List.of("127.0.0.1"));
             this.servers = safeServers;
@@ -271,6 +274,7 @@ public class DovecotConfig extends BasicConfig {
             this.connectionPoolTimeoutSeconds = ((Number) map.getOrDefault("connectionPoolTimeoutSeconds", 60L)).longValue();
             this.connectionIdleTimeoutSeconds = ((Number) map.getOrDefault("connectionIdleTimeoutSeconds", 270L)).longValue();
             this.connectionMaxLifetimeSeconds = ((Number) map.getOrDefault("connectionMaxLifetimeSeconds", 1800L)).longValue();
+            this.connectionMaxMessagesPerConnection = ((Number) map.getOrDefault("connectionMaxMessagesPerConnection", 100)).intValue();
         }
 
         /**
@@ -279,6 +283,13 @@ public class DovecotConfig extends BasicConfig {
          * @return True if enabled, false otherwise.
          */
         public boolean isEnabled() { return enabled; }
+
+        /**
+         * Gets whether SMTP accept should wait for LMTP completion.
+         *
+         * @return True to deliver inline, false to enqueue for async relay.
+         */
+        public boolean isInline() { return inline; }
 
         /**
          * Gets list of LMTP server addresses.
@@ -337,6 +348,16 @@ public class DovecotConfig extends BasicConfig {
          * @return Max lifetime in seconds (default: 1800, i.e., 30 minutes).
          */
         public long getConnectionMaxLifetimeSeconds() { return connectionMaxLifetimeSeconds; }
+
+        /**
+         * Gets the maximum number of emails a pooled LMTP connection should carry before retirement.
+         * <p>
+         * This keeps long-lived connections hot for throughput while still rotating them before
+         * server-side or network state becomes stale.
+         *
+         * @return Maximum envelopes per connection (default: 100).
+         */
+        public int getConnectionMaxMessagesPerConnection() { return connectionMaxMessagesPerConnection; }
     }
 
     /**

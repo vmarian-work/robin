@@ -7,7 +7,7 @@ import com.mimecast.robin.db.SharedDataSource;
 import com.mimecast.robin.endpoints.ApiEndpoint;
 import com.mimecast.robin.endpoints.RobinServiceEndpoint;
 import com.mimecast.robin.metrics.MetricsCron;
-import com.mimecast.robin.queue.RelayQueueCron;
+import com.mimecast.robin.queue.RelayQueueService;
 import com.mimecast.robin.scanners.DkimSigningLookup;
 import com.mimecast.robin.smtp.SmtpListener;
 import com.mimecast.robin.smtp.metrics.SmtpMetrics;
@@ -20,7 +20,7 @@ import com.mimecast.robin.util.VaultClientFactory;
 import com.mimecast.robin.util.VaultMagicProvider;
 
 import javax.naming.ConfigurationException;
-import java.io.FileInputStream;
+import java.io.BufferedInputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
@@ -155,8 +155,8 @@ public class Server extends Foundation {
         // Clean storage directory on startup.
         StorageCleaner.clean(Config.getServer().getStorage());
 
-        // Start the relay queue cron job for processing queued messages.
-        RelayQueueCron.run();
+        // Start queued relay processing.
+        RelayQueueService.run();
 
         // Start the service endpoint for monitoring.
         try {
@@ -197,6 +197,7 @@ public class Server extends Foundation {
                         lmtpConfig.getConnectionPoolTimeoutSeconds(),
                         lmtpConfig.getConnectionIdleTimeoutSeconds(),
                         lmtpConfig.getConnectionMaxLifetimeSeconds(),
+                        lmtpConfig.getConnectionMaxMessagesPerConnection(),
                         lmtpConfig.getServers(),
                         lmtpConfig.getPort(),
                         lmtpConfig.isTls()
@@ -384,7 +385,7 @@ public class Server extends Foundation {
 
         // Load certificate chain.
         Collection<? extends Certificate> certs;
-        try (FileInputStream fis = new FileInputStream(certPath)) {
+        try (BufferedInputStream fis = new BufferedInputStream(Files.newInputStream(Path.of(certPath)), 8192)) {
             certs = cf.generateCertificates(fis);
         }
 

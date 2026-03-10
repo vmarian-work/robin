@@ -1,10 +1,22 @@
 {
   // Queue configuration for performance testing.
-  // Tuned for aggressive retry processing under high load.
+  // Tuned for aggressive dequeue processing under high load.
   enabled: true,
-  delay: 10,                    // Initial delay before first retry (seconds, down from 60)
-  retryDelay: [60, 120, 300],   // Retry schedule (seconds, faster retries)
-  maxRetries: 5,                // More retry attempts
-  cronPeriod: 5,                // Run dequeue every 5 seconds (down from 30)
-  maxDequeuePerTick: 50         // Process up to 50 items per tick (up from 10)
+  startDelaySeconds: 1,         // Start draining queued LMTP deliveries almost immediately.
+  housekeepingIntervalSeconds: 1, // Release expired claims promptly during perf tests.
+  workerThreads: 24,            // Use pooled LMTP delivery with enough concurrency to outrun queue buildup.
+  maxInFlight: 24,              // Keep claimed work aligned with runnable worker capacity.
+  maxClaimBatch: 48,            // Claim in modest batches to avoid ballooning CLAIMED backlog.
+
+  queueMapDB: {
+    enabled: false
+  },
+
+  queuePgSQL: {
+    enabled: true,
+    jdbcUrl: "jdbc:postgresql://postgres-backend:5432/robin",
+    username: "robin",
+    password: "robin",
+    tableName: "relay_queue"
+  }
 }

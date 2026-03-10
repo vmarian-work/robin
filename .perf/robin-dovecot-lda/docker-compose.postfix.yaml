@@ -11,7 +11,6 @@
 
 services:
   postfix-dovecot-lda:
-    container_name: postfix-dovecot-lda
     build:
       context: ../../
       dockerfile: ./.perf/robin-dovecot-lda/postfix.Dockerfile
@@ -24,11 +23,11 @@ services:
       - ../.shared/postfix/etc/postfix/pgsql-virtual-mailbox-maps.cf:/etc/postfix/pgsql-virtual-mailbox-maps.cf:ro
       # Dovecot configs (reuse from robin-dovecot)
       - ../robin-dovecot/dovecot/etc:/etc/dovecot:ro
-      # Logs
-      - ../../log/dovecot:/var/log/dovecot
-      - ../../log/postfix:/var/log/postfix
       # Storage
-      - ../../store/dovecot:/var/mail/vhosts
+      - dovecot-data:/var/mail/vhosts
+    tmpfs:
+      - /var/log/dovecot:size=64m
+      - /var/log/postfix:size=32m
     depends_on:
       postgres:
         condition: service_healthy
@@ -50,23 +49,32 @@ services:
 
   postgres:
     image: postgres:latest
-    container_name: postgres
     command:
       - "postgres"
       - "-c"
-      - "logging_collector=on"
+      - "log_destination=stderr"
       - "-c"
-      - "log_directory=/var/log"
+      - "max_connections=300"
       - "-c"
-      - "log_filename=postgresql-%Y-%m-%d.log"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
     environment:
       POSTGRES_DB: robin
       POSTGRES_USER: robin
       POSTGRES_PASSWORD: robin
+      PGDATA: /var/lib/postgresql/data/pgdata
     volumes:
-      - ../../log/postgres:/var/log
-      - ../../store/postgres:/var/lib/postgresql
+      - postgres-data:/var/lib/postgresql
       - ../.shared/db-init:/docker-entrypoint-initdb.d:ro
+    tmpfs:
+      - /var/log:size=32m
     ports:
       - "5432:5432"
     networks:
@@ -82,3 +90,7 @@ services:
 networks:
   robin-dovecot-lda-net:
     driver: bridge
+
+volumes:
+  postgres-data:
+  dovecot-data:

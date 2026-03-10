@@ -1,0 +1,110 @@
+# Docker Compose for Haraka + Dovecot Performance Testing
+# This stack tests Haraka as the SMTP ingress server delivering to Dovecot via LMTP.
+
+services:
+  dovecot-mail-init:
+    image: alpine:3.20
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -lc
+      - |
+        set -eu
+        mkdir -p /var/mail/vhosts/example.com
+        chown -R 5000:5000 /var/mail/vhosts
+        chmod 2775 /var/mail/vhosts /var/mail/vhosts/example.com
+    volumes:
+      - dovecot-data:/var/mail/vhosts
+    restart: "no"
+
+  postgres:
+    image: postgres:latest
+    command:
+      - "postgres"
+      - "-c"
+      - "log_destination=stderr"
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+    environment:
+      POSTGRES_DB: robin
+      POSTGRES_USER: robin
+      POSTGRES_PASSWORD: robin
+      POSTGRES_MAX_CONNECTIONS: 300
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ../.shared/db-init:/docker-entrypoint-initdb.d:ro
+      - postgres-data:/var/lib/postgresql
+    tmpfs:
+      - /var/log:size=32m
+    networks:
+      haraka-net:
+        aliases:
+          - postgres-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U robin -d robin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  dovecot:
+    image: dovecot/dovecot:latest
+    user: "0:0"
+    cap_add:
+      - CHOWN
+    volumes:
+      - ./dovecot/etc:/etc/dovecot
+      - dovecot-data:/var/mail/vhosts
+    tmpfs:
+      - /var/log:size=64m
+    networks:
+      haraka-net:
+        aliases:
+          - lmtp-backend
+    depends_on:
+      dovecot-mail-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "doveadm", "who"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  haraka:
+    build:
+      context: ../../
+      dockerfile: ./.perf/robin-dovecot/haraka/Dockerfile
+    networks:
+      - haraka-net
+    depends_on:
+      dovecot:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    ports:
+      - "2525:25"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "25"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+networks:
+  haraka-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  dovecot-data:

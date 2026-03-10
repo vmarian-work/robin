@@ -21,6 +21,7 @@ import org.apache.logging.log4j.ThreadContext;
 import javax.net.ssl.SSLSocket;
 import java.io.DataOutputStream;
 import java.io.IOException;
+import java.net.InetAddress;
 import java.net.InetSocketAddress;
 import java.net.Socket;
 import java.util.Optional;
@@ -34,6 +35,8 @@ import java.util.Optional;
  */
 public class Connection extends SmtpFoundation {
     private static final Logger log = LogManager.getLogger(Connection.class);
+    private static final int SOCKET_PUSHBACK_BUFFER_SIZE = 8192;
+    private static final XBillDnsRecordClient PTR_LOOKUP = new XBillDnsRecordClient();
 
     /**
      * Session instance.
@@ -83,14 +86,19 @@ public class Connection extends SmtpFoundation {
         session = Factories.getSession();
 
         // Connection info.
-        session.setAddr(socket.getLocalAddress().getHostAddress());
-        session.setRdns(socket.getLocalAddress().getHostAddress());
+        InetAddress localAddress = socket.getLocalAddress();
+        String localHostAddress = localAddress.getHostAddress();
+        session.setAddr(localHostAddress);
+        session.setRdns(localHostAddress);
 
-        session.setFriendAddr(socket.getInetAddress().getHostAddress());
-        // Do PTR lookup via DNS client; fall back to address string.
-        session.setFriendRdns(new XBillDnsRecordClient()
-                .getPtrRecord(session.getFriendAddr())
-                .orElse(session.getFriendAddr()));
+        InetAddress remoteAddress = socket.getInetAddress();
+        String remoteHostAddress = remoteAddress.getHostAddress();
+        session.setFriendAddr(remoteHostAddress);
+        if (remoteAddress.isLoopbackAddress() || remoteAddress.isLinkLocalAddress() || remoteAddress.isSiteLocalAddress()) {
+            session.setFriendRdns(remoteHostAddress);
+        } else {
+            session.setFriendRdns(PTR_LOOKUP.getPtrRecord(remoteHostAddress).orElse(remoteHostAddress));
+        }
     }
 
     /**
@@ -151,7 +159,7 @@ public class Connection extends SmtpFoundation {
      */
     public void buildStreams() throws IOException {
         ThreadContext.put("bCode", socket.getRemoteSocketAddress().toString());
-        inc = new LineInputStream(socket.getInputStream());
+        inc = new LineInputStream(socket.getInputStream(), SOCKET_PUSHBACK_BUFFER_SIZE);
         out = new DataOutputStream(socket.getOutputStream());
     }
 

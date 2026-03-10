@@ -4,7 +4,6 @@ import com.mimecast.robin.auth.SqlAuthManager;
 import com.mimecast.robin.config.server.ServerConfig;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Factories;
-import com.mimecast.robin.main.Server;
 import com.mimecast.robin.sasl.SqlUserLookup;
 import com.mimecast.robin.mime.EmailParser;
 import com.mimecast.robin.mime.headers.ChaosHeaders;
@@ -16,7 +15,6 @@ import com.mimecast.robin.queue.relay.DovecotLdaClient;
 import com.mimecast.robin.smtp.MessageEnvelope;
 import com.mimecast.robin.smtp.connection.Connection;
 import com.mimecast.robin.smtp.transaction.EnvelopeTransactionList;
-import com.mimecast.robin.util.Sleep;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -41,6 +39,7 @@ import java.util.Optional;
  */
 public class DovecotStorageProcessor extends AbstractStorageProcessor {
     private static final Logger log = LogManager.getLogger(DovecotStorageProcessor.class);
+    private final PooledLmtpDelivery pooledLmtpDelivery = new PooledLmtpDelivery();
 
     /**
      * Processes the email for mailbox storage using the configured backend.
@@ -115,13 +114,8 @@ public class DovecotStorageProcessor extends AbstractStorageProcessor {
                 String.join(",", nonBotRecipients),
                 connection.getSession().isOutbound());
 
-        // Get connection pool from Server
-        LmtpConnectionPool pool = Server.getLmtpPool();
-        if (pool == null) {
-            log.error("LMTP connection pool not initialized");
-            for (String recipient : nonBotRecipients) {
-                processFailure(connection, config, recipient);
-            }
+        if (!config.getDovecot().getSaveLmtp().isInline()) {
+            enqueueLmtpDelivery(connection, envelope, nonBotRecipients, config);
             return;
         }
 
@@ -131,74 +125,55 @@ public class DovecotStorageProcessor extends AbstractStorageProcessor {
         lmtpEnvelope.setRcpt(null);
         lmtpEnvelope.setRcpts(new ArrayList<>(nonBotRecipients));
 
+        connection.getSession().getEnvelopes().clear();
+        connection.getSession().addEnvelope(lmtpEnvelope);
+
         // Attempt inline delivery with retries
         long maxAttempts = config.getDovecot().getInlineSaveMaxAttempts();
         int retryDelay = Math.toIntExact(config.getDovecot().getInlineSaveRetryDelay());
+        boolean deliverySucceeded = pooledLmtpDelivery.deliver(connection.getSession(), maxAttempts, retryDelay);
+        EnvelopeTransactionList transactionList = connection.getSession().getSessionTransactionList().getEnvelopes().isEmpty()
+                ? null
+                : connection.getSession().getSessionTransactionList().getEnvelopes().getLast();
 
-        boolean deliverySucceeded = false;
-
-        for (long attempt = 1; attempt <= maxAttempts; attempt++) {
-            if (attempt > 1 && retryDelay > 0) {
-                Sleep.nap(retryDelay);
-            }
-
-            // Borrow connection from pool (creates new if needed, includes LHLO)
-            LmtpConnectionPool.PooledLmtpConnection pooled = pool.borrow(lmtpEnvelope);
-            if (pooled == null) {
-                log.error("Failed to acquire LMTP connection from pool");
-                continue;
-            }
-
-            try {
-                // Set UID on borrowed connection's session
-                pooled.getSession().setUID(connection.getSession().getUID());
-                pooled.getSession().setDirection(connection.getSession().getDirection());
-
-                // Use LmtpBehaviour to send (MAIL/RCPT/DATA only, no QUIT)
-                LmtpBehaviour behaviour = new LmtpBehaviour();
-                behaviour.process(pooled.getConnection());
-
-                // Check transaction results to determine success
-                var sessionTransactionList = pooled.getSession().getSessionTransactionList();
-                var envelopes = sessionTransactionList != null ? sessionTransactionList.getEnvelopes() : null;
-                EnvelopeTransactionList transactionList = (envelopes != null && !envelopes.isEmpty())
-                        ? envelopes.getLast()
-                        : null;
-
-                if (transactionList != null && transactionList.getErrors().isEmpty()) {
-                    deliverySucceeded = true;
-                    log.info("LMTP delivery successful after {} attempt(s)", attempt);
-                    // Return connection to pool for reuse
-                    pool.returnConnection(pooled);
-                    break;
-                } else {
-                    if (attempt < maxAttempts) {
-                        log.warn("Attempt {} of {} LMTP delivery failed (will retry)", attempt, maxAttempts);
-                    } else {
-                        log.error("Attempt {} of {} LMTP delivery failed (giving up)", attempt, maxAttempts);
-                    }
-                    // Invalidate connection on failure (may be in bad state)
-                    pool.invalidate(pooled);
-                }
-            } catch (Exception e) {
-                if (attempt < maxAttempts) {
-                    log.warn("Attempt {} of {} LMTP delivery threw exception (will retry): {}",
-                            attempt, maxAttempts, e.getMessage());
-                } else {
-                    log.error("Attempt {} of {} LMTP delivery threw exception (giving up): {}",
-                            attempt, maxAttempts, e.getMessage());
-                }
-                // Invalidate connection on exception
-                pool.invalidate(pooled);
-            }
+        if (deliverySucceeded) {
+            log.info("LMTP delivery successful after pooled delivery");
         }
 
         // Process failure if delivery did not succeed
-        if (!deliverySucceeded) {
+        if (!deliverySucceeded || transactionList == null) {
             for (String recipient : nonBotRecipients) {
                 processFailure(connection, config, recipient);
             }
         }
+    }
+
+    private void enqueueLmtpDelivery(Connection connection, MessageEnvelope envelope,
+                                     List<String> recipients, ServerConfig config) {
+        RelaySession relaySession = new RelaySession(Factories.getSession())
+                .setProtocol("lmtp");
+
+        var lmtpConfig = config.getDovecot().getSaveLmtp();
+        relaySession.getSession()
+                .setDirection(connection.getSession().getDirection())
+                .setMx(lmtpConfig.getServers())
+                .setPort(lmtpConfig.getPort())
+                .setTls(lmtpConfig.isTls())
+                .setLhlo(Config.getServer().getHostname());
+
+        MessageEnvelope queuedEnvelope = new MessageEnvelope()
+                .setFile(envelope.getFile())
+                .setMail(envelope.getMail())
+                .setRcpts(new ArrayList<>(recipients));
+
+        relaySession.getSession().addEnvelope(queuedEnvelope);
+        QueueFiles.persistEnvelopeFiles(relaySession);
+        PersistentQueue.getInstance().enqueue(relaySession);
+
+        log.info("Queued LMTP delivery for sender={} recipients={} uid={}",
+                envelope.getMail(),
+                String.join(",", recipients),
+                connection.getSession().getUID());
     }
 
     /**

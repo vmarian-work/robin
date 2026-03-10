@@ -5,8 +5,10 @@ import com.google.gson.GsonBuilder;
 import com.mimecast.robin.main.Config;
 import com.mimecast.robin.main.Server;
 import com.mimecast.robin.metrics.MetricsCron;
+import com.mimecast.robin.queue.RelayDequeue;
 import com.mimecast.robin.storage.LmtpConnectionPool;
-import com.mimecast.robin.queue.RelayQueueCron;
+import com.mimecast.robin.storage.PooledLmtpDelivery;
+import com.mimecast.robin.queue.RelayQueueService;
 import com.mimecast.robin.queue.RetryScheduler;
 import com.mimecast.robin.smtp.SmtpListener;
 import com.sun.net.httpserver.HttpExchange;
@@ -109,23 +111,25 @@ public class RobinServiceEndpoint extends ServiceEndpoint {
 
     /**
      * Generates JSON representation of relay queue statistics.
-     *
-     * @return JSON object string containing queue size and retry histogram.
      */
     private String getQueueJson() {
-        long queueSize = RelayQueueCron.getQueueSize();
-        Map<Integer, Long> histogram = RelayQueueCron.getRetryHistogram();
-        String histogramJson = histogram.entrySet().stream()
-                .sorted(Map.Entry.comparingByKey())
-                .map(e -> String.format("\"%d\":%d", e.getKey(), e.getValue()))
-                .collect(Collectors.joining(",", "{", "}"));
-        return String.format("{\"size\":%d,\"retryHistogram\":%s}", queueSize, histogramJson);
+        var stats = RelayQueueService.getQueueStats();
+        return String.format(
+                "{\"size\":%d,\"ready\":%d,\"claimed\":%d,\"dead\":%d,\"oldestReadyAtEpochSeconds\":%d,\"oldestClaimedAtEpochSeconds\":%d,\"reschedules\":%d}",
+                stats.totalCount(),
+                stats.readyCount(),
+                stats.claimedCount(),
+                stats.deadCount(),
+                stats.oldestReadyAtEpochSeconds(),
+                stats.oldestClaimedAtEpochSeconds(),
+                RelayDequeue.getRescheduleCount()
+        );
     }
 
     /**
-     * Generates JSON representation of retry scheduler configuration and cron statistics.
+     * Generates JSON representation of retry scheduler configuration and queue service statistics.
      *
-     * @return JSON object string containing scheduler config and cron execution info.
+     * @return JSON object string containing scheduler config and queue service execution info.
      */
     private String getSchedulerJson() {
         String schedulerConfigJson = String.format("{\"totalRetries\":%d,\"firstWaitMinutes\":%d,\"growthFactor\":%.2f}",
@@ -133,13 +137,25 @@ public class RobinServiceEndpoint extends ServiceEndpoint {
                 RetryScheduler.getFirstWaitMinutes(),
                 RetryScheduler.getGrowthFactor());
 
-        String cronJson = String.format("{\"initialDelaySeconds\":%d,\"periodSeconds\":%d,\"lastExecutionEpochSeconds\":%d,\"nextExecutionEpochSeconds\":%d}",
-                RelayQueueCron.getInitialDelaySeconds(),
-                RelayQueueCron.getPeriodSeconds(),
-                RelayQueueCron.getLastExecutionEpochSeconds(),
-                RelayQueueCron.getNextExecutionEpochSeconds());
+        String serviceJson = String.format("{\"startDelaySeconds\":%d,\"housekeepingIntervalSeconds\":%d,\"workerThreads\":%d,\"maxInFlight\":%d,\"dispatchIdleMinMillis\":%d,\"dispatchIdleMaxMillis\":%d,\"currentDispatchIdleMillis\":%d,\"outcomeBatchSize\":%d,\"outcomeFlushMillis\":%d,\"currentOutcomeQueueDepth\":%d,\"currentInFlight\":%d,\"lastMutationBatchSize\":%d,\"lastMutationCommitDurationMillis\":%d,\"lastDispatchEpochSeconds\":%d,\"lastHousekeepingEpochSeconds\":%d,\"nextHousekeepingEpochSeconds\":%d}",
+                RelayQueueService.getStartDelaySeconds(),
+                RelayQueueService.getHousekeepingIntervalSeconds(),
+                RelayQueueService.getWorkerThreads(),
+                RelayQueueService.getMaxInFlight(),
+                RelayQueueService.getDispatchIdleMinMillis(),
+                RelayQueueService.getDispatchIdleMaxMillis(),
+                RelayQueueService.getCurrentDispatchIdleMillis(),
+                RelayQueueService.getOutcomeBatchSize(),
+                RelayQueueService.getOutcomeFlushMillis(),
+                RelayQueueService.getCurrentOutcomeQueueDepth(),
+                RelayQueueService.getCurrentInFlight(),
+                RelayQueueService.getLastMutationBatchSize(),
+                RelayQueueService.getLastMutationCommitDurationMillis(),
+                RelayQueueService.getLastDispatchEpochSeconds(),
+                RelayQueueService.getLastHousekeepingEpochSeconds(),
+                RelayQueueService.getNextHousekeepingEpochSeconds());
 
-        return String.format("{\"config\":%s,\"cron\":%s}", schedulerConfigJson, cronJson);
+        return String.format("{\"config\":%s,\"service\":%s}", schedulerConfigJson, serviceJson);
     }
 
     /**
@@ -190,11 +206,19 @@ public class RobinServiceEndpoint extends ServiceEndpoint {
             return "{\"enabled\":false}";
         }
 
-        return String.format("{\"enabled\":true,\"maxSize\":%d,\"total\":%d,\"idle\":%d,\"borrowed\":%d}",
+        return String.format("{\"enabled\":true,\"maxSize\":%d,\"total\":%d,\"idle\":%d,\"borrowed\":%d,\"borrowTimeouts\":%d,\"invalidations\":%d,\"resetFailures\":%d,\"transactionFailures\":%d,\"connectionFailures\":%d,\"deliverySuccesses\":%d,\"maxMessagesPerConnection\":%d,\"retiredByMessageLimit\":%d}",
                 lmtpPool.getPoolSize(),
                 lmtpPool.getTotalConnections(),
                 lmtpPool.getIdleCount(),
-                lmtpPool.getBorrowedCount());
+                lmtpPool.getBorrowedCount(),
+                lmtpPool.getBorrowTimeoutCount(),
+                lmtpPool.getInvalidationCount(),
+                lmtpPool.getResetFailureCount(),
+                PooledLmtpDelivery.getTransactionFailureCount(),
+                PooledLmtpDelivery.getConnectionFailureCount(),
+                PooledLmtpDelivery.getSuccessCount(),
+                lmtpPool.getMaxMessagesPerConnection(),
+                lmtpPool.getMessageLimitRetirementCount());
     }
 
     /**
@@ -377,4 +401,3 @@ public class RobinServiceEndpoint extends ServiceEndpoint {
                 .replace("'", "&#39;");
     }
 }
-

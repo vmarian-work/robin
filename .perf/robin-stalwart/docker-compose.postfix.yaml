@@ -4,17 +4,22 @@
 services:
   postgres:
     image: postgres:latest
-    container_name: postgres
     command:
       - "postgres"
       - "-c"
-      - "logging_collector=on"
-      - "-c"
-      - "log_directory=/var/log/postgresql"
-      - "-c"
-      - "log_filename=postgresql.log"
-      - "-c"
       - "log_destination=stderr"
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
     environment:
       POSTGRES_DB: robin
       POSTGRES_USER: robin
@@ -26,8 +31,9 @@ services:
       - ../.shared/db-init/02-create-users.sql:/docker-entrypoint-initdb.d/02-create-users.sql:ro
       - ../.shared/db-init-stalwart/03-create-stalwart-tables.sql:/docker-entrypoint-initdb.d/03-create-stalwart-tables.sql:ro
       - ../.shared/db-init-stalwart/04-create-stalwart-users.sql:/docker-entrypoint-initdb.d/04-create-stalwart-users.sql:ro
-      - ../../store/postgres:/var/lib/postgresql
-      - ../../log/postgres:/var/log/postgresql
+      - postgres-data:/var/lib/postgresql
+    tmpfs:
+      - /var/log:size=32m
     networks:
       postfix-stalwart-net:
         aliases:
@@ -40,12 +46,12 @@ services:
 
   stalwart:
     image: stalwartlabs/stalwart:latest
-    container_name: stalwart
     user: "0:0"
     volumes:
       - ./stalwart/etc:/opt/stalwart/etc
-      - ../../store/stalwart:/opt/stalwart/data
-      - ../../log/stalwart:/var/log
+      - stalwart-data:/opt/stalwart/data
+    tmpfs:
+      - /var/log:size=32m
     networks:
       postfix-stalwart-net:
         aliases:
@@ -62,10 +68,13 @@ services:
     build:
       context: ../../
       dockerfile: .perf/.shared/postfix/Dockerfile
-    container_name: postfix
     volumes:
-      - ../.shared/postfix/etc/postfix:/etc/postfix
-      - ../../log/postfix:/var/log/postfix
+      - ./postfix/main.cf:/etc/postfix/main.cf:ro
+      - ../.shared/postfix/etc/postfix/master.cf:/etc/postfix/master.cf:ro
+      - ../.shared/postfix/etc/postfix/pgsql-virtual-mailbox-domains.cf:/etc/postfix/pgsql-virtual-mailbox-domains.cf:ro
+      - ../.shared/postfix/etc/postfix/pgsql-virtual-mailbox-maps.cf:/etc/postfix/pgsql-virtual-mailbox-maps.cf:ro
+    tmpfs:
+      - /var/log/postfix:size=32m
     networks:
       - postfix-stalwart-net
     depends_on:
@@ -86,4 +95,6 @@ networks:
   postfix-stalwart-net:
     driver: bridge
 
-volumes: {}
+volumes:
+  postgres-data:
+  stalwart-data:
