@@ -25,6 +25,7 @@ import java.net.InetSocketAddress;
  *   <li><b>GET /logs</b> — Search logs ({@link LogsHandler})</li>
  *   <li><b>GET|POST|PATCH|DELETE /users/...</b> — User management ({@link UsersHandler})</li>
  *   <li><b>GET|POST|PATCH|DELETE /store/...</b> — Storage browser ({@link StoreHandler})</li>
+ *   <li><b>GET|POST|PATCH|DELETE /store-rocksdb/...</b> — RocksDB mailbox API ({@link StoreRocksDbHandler})</li>
  *   <li><b>GET /health</b> — Health check ({@link ApiEndpoint})</li>
  * </ul>
  */
@@ -53,47 +54,51 @@ public class ApiEndpoint extends HttpEndpoint {
         QueueOperationsHandler queueHandler = new QueueOperationsHandler(this, auth);
         UsersHandler usersHandler = new UsersHandler(this, auth);
         StoreHandler storeHandler = new StoreHandler(this, auth, storagePathOverride);
+        StoreRocksDbHandler storeRocksDbHandler = new StoreRocksDbHandler(this, auth);
 
         // Bind the HTTP server to the configured API port.
         int apiPort = config.getPort(8090);
-        HttpServer server = HttpServer.create(new InetSocketAddress(apiPort), 10);
+        this.server = HttpServer.create(new InetSocketAddress(apiPort), 10);
 
         // Register endpoints.
 
         // Landing page for API endpoint discovery.
-        server.createContext("/", this::handleLandingPage);
+        this.server.createContext("/", this::handleLandingPage);
 
         // Favicon.
-        server.createContext("/favicon.ico", this::handleFavicon);
+        this.server.createContext("/favicon.ico", this::handleFavicon);
 
         // Client send endpoint.
-        server.createContext("/client/send", clientSendHandler::handle);
+        this.server.createContext("/client/send", clientSendHandler::handle);
 
         // Client queue submission endpoint.
-        server.createContext("/client/queue", clientQueueHandler::handle);
+        this.server.createContext("/client/queue", clientQueueHandler::handle);
 
         // Queue listing endpoint.
-        server.createContext("/client/queue/list", queueHandler::handleList);
+        this.server.createContext("/client/queue/list", queueHandler::handleList);
 
         // Queue control endpoints.
-        server.createContext("/client/queue/delete", queueHandler::handleDelete);
-        server.createContext("/client/queue/retry", queueHandler::handleRetry);
-        server.createContext("/client/queue/bounce", queueHandler::handleBounce);
+        this.server.createContext("/client/queue/delete", queueHandler::handleDelete);
+        this.server.createContext("/client/queue/retry", queueHandler::handleRetry);
+        this.server.createContext("/client/queue/bounce", queueHandler::handleBounce);
 
         // Logs search endpoint.
-        server.createContext("/logs", this::handleLogs);
+        this.server.createContext("/logs", this::handleLogs);
 
         // User integration endpoints.
-        server.createContext("/users", usersHandler::handle);
+        this.server.createContext("/users", usersHandler::handle);
 
         // Storage browser endpoint.
-        server.createContext("/store", storeHandler::handle);
+        this.server.createContext("/store", storeHandler::handle);
+
+        // RocksDB mailbox endpoint.
+        this.server.createContext("/store-rocksdb", storeRocksDbHandler::handle);
 
         // Liveness endpoint for API.
-        server.createContext("/health", exchange -> sendJson(exchange, 200, "{\"status\":\"UP\"}"));
+        this.server.createContext("/health", exchange -> sendJson(exchange, 200, "{\"status\":\"UP\"}"));
 
         // Start the embedded server on a background thread.
-        new Thread(server::start).start();
+        new Thread(this.server::start).start();
         log.info("Landing available at http://localhost:{}/", apiPort);
         log.info("Send endpoint available at http://localhost:{}/client/send", apiPort);
         log.info("Queue endpoint available at http://localhost:{}/client/queue", apiPort);
@@ -104,6 +109,7 @@ public class ApiEndpoint extends HttpEndpoint {
         log.info("Logs available at http://localhost:{}/logs", apiPort);
         log.info("Users available at http://localhost:{}/users", apiPort);
         log.info("Store available at http://localhost:{}/store/", apiPort);
+        log.info("RocksDB store available at http://localhost:{}/store-rocksdb/", apiPort);
         log.info("Health available at http://localhost:{}/health", apiPort);
         if (auth.isAuthEnabled()) {
             log.info("Authentication is enabled");
@@ -184,4 +190,3 @@ public class ApiEndpoint extends HttpEndpoint {
         }
     }
 }
-

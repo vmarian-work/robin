@@ -1,0 +1,105 @@
+# Docker Compose for Robin MTA + Stalwart direct-ingest performance testing
+# This stack tests Robin MTA importing mail into Stalwart using its HTTP/JMAP ingest path.
+
+services:
+  postgres:
+    image: postgres:latest
+    command:
+      - "postgres"
+      - "-c"
+      - "log_destination=stderr"
+      - "-c"
+      - "max_connections=300"
+      - "-c"
+      - "shared_buffers=512MB"
+      - "-c"
+      - "effective_cache_size=1536MB"
+      - "-c"
+      - "work_mem=8MB"
+      - "-c"
+      - "maintenance_work_mem=128MB"
+      - "-c"
+      - "checkpoint_completion_target=0.9"
+    environment:
+      POSTGRES_DB: robin
+      POSTGRES_USER: robin
+      POSTGRES_PASSWORD: robin
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ../.shared/db-init/01-create-schema.sql:/docker-entrypoint-initdb.d/01-create-schema.sql:ro
+      - ../.shared/db-init/02-create-users.sql:/docker-entrypoint-initdb.d/02-create-users.sql:ro
+      - ../.shared/db-init-stalwart/03-create-stalwart-tables.sql:/docker-entrypoint-initdb.d/03-create-stalwart-tables.sql:ro
+      - ../.shared/db-init-stalwart/04-create-stalwart-users.sql:/docker-entrypoint-initdb.d/04-create-stalwart-users.sql:ro
+      - postgres-data:/var/lib/postgresql
+    tmpfs:
+      - /var/log:size=32m
+    networks:
+      robin-stalwart-direct-net:
+        aliases:
+          - postgres-backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U robin -d robin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  stalwart:
+    image: stalwartlabs/stalwart:latest
+    user: "0:0"
+    volumes:
+      - ../robin-stalwart/stalwart/etc:/opt/stalwart/etc
+      - stalwart-data:/opt/stalwart/data
+    tmpfs:
+      - /var/log:size=32m
+    networks:
+      robin-stalwart-direct-net:
+        aliases:
+          - stalwart-backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "2143:143"
+      - "28081:8080"
+
+  robin:
+    image: robin-robin-mta:latest
+    platform: linux/amd64
+    restart: on-failure
+    environment:
+      JAVA_TOOL_OPTIONS: "-Dnetworkaddress.cache.negative.ttl=300 -Dsun.net.inetaddr.negative.ttl=300 -Dlog4j2.asyncLoggerWaitStrategy=Timeout -Dlog4j2.asyncLoggerTimeout=1000 ${JAVA_TOOL_OPTIONS:-}"
+    volumes:
+      - ../.shared/robin/cfg:/usr/local/robin/cfg
+      - ./robin-cfg-queued/dovecot.json5:/usr/local/robin/cfg/dovecot.json5:ro
+      - ./robin-cfg-queued/queue.json5:/usr/local/robin/cfg/queue.json5:ro
+      - ./robin-cfg-queued/stalwart.json5:/usr/local/robin/cfg/stalwart.json5:ro
+      - robin-store:/usr/local/robin/store
+    tmpfs:
+      - /var/log:size=32m
+      - /usr/local/robin/store/robin/tmp:size=256m
+    networks:
+      - robin-stalwart-direct-net
+    depends_on:
+      stalwart:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+    ports:
+      - "2525:25"
+      - "28080:8080"
+      - "28090:8090"
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "25"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+networks:
+  robin-stalwart-direct-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  stalwart-data:
+  robin-store:
