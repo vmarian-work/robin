@@ -75,11 +75,81 @@ public abstract class SQLQueueDatabase<T extends Serializable> implements QueueD
                         log.debug("Skipping queue index statement for {}: {}", getDatabaseType(), sql);
                     }
                 }
+
+                if (!isQueueSchemaCompatible(connection)) {
+                    recreateQueueTable(connection);
+                }
             }
             log.info("{} queue database initialized: table={}, maxPoolSize={}", getDatabaseType(), tableName, maxPoolSize);
         } catch (SQLException e) {
             throw new RuntimeException("Failed to initialize " + getDatabaseType() + " queue database", e);
         }
+    }
+
+    /**
+     * Validates that the configured table matches Robin's expected schema.
+     *
+     * <p>The queue schema has evolved over time. If an older schema is present, queries that
+     * reference modern columns (for example, {@code state}) will fail at runtime.
+     *
+     * @param connection Database connection.
+     * @return True if the schema looks compatible; otherwise, false.
+     */
+    private boolean isQueueSchemaCompatible(Connection connection) {
+        String sql = "SELECT queue_uid, state, next_attempt_at, claimed_until, created_epoch, updated_epoch, retry_count, data FROM "
+                + tableName + " LIMIT 1";
+        try (PreparedStatement ps = connection.prepareStatement(sql)) {
+            ps.executeQuery();
+            return true;
+        } catch (SQLException e) {
+            String state = e.getSQLState();
+            boolean missingColumn = "42703".equals(state) || "42S22".equals(state);
+            if (missingColumn) {
+                return false;
+            }
+
+            log.warn("Queue schema validation failed for {} (sqlState={}): {}", tableName, state, e.getMessage());
+            return true;
+        }
+    }
+
+    /**
+     * Recreates the queue table when an incompatible legacy schema is detected.
+     *
+     * <p>The existing table is renamed to a legacy name to preserve data for inspection.
+     * The new table is then created using the current schema and indexes.
+     *
+     * @param connection Database connection.
+     * @throws SQLException If migration cannot be completed.
+     */
+    private void recreateQueueTable(Connection connection) throws SQLException {
+        String legacyName = tableName + "_legacy_" + (System.currentTimeMillis() / 1000);
+        log.warn("Queue table schema mismatch detected for {}. Recreating table; legacy table will be preserved as {}.", tableName, legacyName);
+
+        try (Statement st = connection.createStatement()) {
+            try {
+                st.execute(getRenameTableSQL(legacyName));
+            } catch (SQLException renameError) {
+                log.warn("Unable to rename legacy queue table {}: {}. Attempting to drop and recreate.", tableName, renameError.getMessage());
+                st.execute("DROP TABLE IF EXISTS " + tableName);
+            }
+
+            st.execute(getCreateTableSQL());
+            for (String sql : getCreateIndexSQL()) {
+                try {
+                    st.execute(sql);
+                } catch (SQLException ignored) {
+                    log.debug("Skipping queue index statement for {}: {}", getDatabaseType(), sql);
+                }
+            }
+        }
+    }
+
+    private String getRenameTableSQL(String legacyTableName) {
+        if ("PostgreSQL".equals(getDatabaseType())) {
+            return "ALTER TABLE " + tableName + " RENAME TO " + legacyTableName;
+        }
+        return "RENAME TABLE " + tableName + " TO " + legacyTableName;
     }
 
     @Override
@@ -422,8 +492,7 @@ public abstract class SQLQueueDatabase<T extends Serializable> implements QueueD
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (QueueMutation<T> mutation : mutations) {
                 QueueItem<T> item = mutation.item().readyAt(mutation.nextAttemptAtEpochSeconds())
-                        .setLastError(mutation.lastError())
-                        .syncFromPayload();
+                        .setLastError(mutation.lastError());
                 statement.setString(1, QueueItemState.READY.name());
                 statement.setLong(2, item.getNextAttemptAtEpochSeconds());
                 statement.setLong(3, item.getUpdatedAtEpochSeconds());
@@ -448,7 +517,7 @@ public abstract class SQLQueueDatabase<T extends Serializable> implements QueueD
                 + " protocol = ?, session_uid = ?, last_error = ?, data = ? WHERE queue_uid = ?";
         try (PreparedStatement statement = connection.prepareStatement(sql)) {
             for (QueueMutation<T> mutation : mutations) {
-                QueueItem<T> item = mutation.item().dead(mutation.lastError()).syncFromPayload();
+                QueueItem<T> item = mutation.item().dead(mutation.lastError());
                 statement.setString(1, QueueItemState.DEAD.name());
                 statement.setLong(2, item.getUpdatedAtEpochSeconds());
                 statement.setInt(3, item.getRetryCount());
@@ -506,7 +575,6 @@ public abstract class SQLQueueDatabase<T extends Serializable> implements QueueD
         item.setProtocol(rs.getString("protocol"));
         item.setSessionUid(rs.getString("session_uid"));
         item.setLastError(rs.getString("last_error"));
-        item.syncFromPayload();
         return item;
     }
 

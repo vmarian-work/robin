@@ -19,7 +19,9 @@
         "127.0.0.1",
         "::1",
         "192.168.1.0/24",
-        "10.0.0.0/8"
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "172.21.0.0/16"
       ],
 
       // Token-based authorization (alternative to IP)
@@ -50,7 +52,9 @@
         "127.0.0.1",
         "::1",
         "192.168.1.0/24",
-        "10.0.0.0/8"
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "172.21.0.0/16"
       ],
 
       // Token-based authorization (alternative to IP)
@@ -84,7 +88,9 @@
         "127.0.0.1",
         "::1",
         "192.168.1.0/24",
-        "10.0.0.0/8"
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "172.21.0.0/16"
       ],
 
       // Token-based authorization (alternative to IP)
@@ -96,8 +102,8 @@
       botName: "dmarc",
 
       // DMARC bot endpoint configuration
-      // Full URL to POST parsed DMARC reports to
-      endpoint: "https://localhost/api/dmarc/reports",
+      // Full URL to POST parsed DMARC reports to (use Docker network hostname)
+      endpoint: "https://robin-admin-caddy:3443/api/dmarc/reports",
 
       // Skip TLS certificate verification (for self-signed certs)
       // Set to false in production with valid certificates
@@ -117,7 +123,9 @@
         "127.0.0.1",
         "::1",
         "192.168.1.0/24",
-        "10.0.0.0/8"
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "172.21.0.0/16"
       ],
 
       // Token-based authorization
@@ -126,8 +134,8 @@
       botName: "tlsrpt",
 
       // TLSRPT bot endpoint configuration
-      // Full URL to POST parsed TLSRPT reports to
-      endpoint: "https://localhost/api/tlsrpt/reports",
+      // Full URL to POST parsed TLSRPT reports to (use Docker network hostname)
+      endpoint: "https://robin-admin-caddy:3443/api/tlsrpt/reports",
 
       // Skip TLS certificate verification (for self-signed certs)
       insecure: true
@@ -146,7 +154,9 @@
         "127.0.0.1",
         "::1",
         "192.168.1.0/24",
-        "10.0.0.0/8"
+        "10.0.0.0/8",
+        "172.16.0.0/12",
+        "172.21.0.0/16"
       ],
 
       // Token-based authorization
@@ -155,8 +165,8 @@
       botName: "forensic",
 
       // Forensic bot endpoint configuration
-      // Full URL to POST parsed forensic reports to
-      endpoint: "https://localhost/api/forensic/reports",
+      // Full URL to POST parsed forensic reports to (use Docker network hostname)
+      endpoint: "https://robin-admin-caddy:3443/api/forensic/reports",
 
       // Skip TLS certificate verification (for self-signed certs)
       insecure: true
